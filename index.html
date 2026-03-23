@@ -1,0 +1,260 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Trading Pro | Predictive Terminal</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+      defer
+    ></script>
+    <script src="/app.js" defer></script>
+  </head>
+  <body data-theme="dark">
+    <div class="bg-fade"></div>
+    <div class="bg-grid"></div>
+    <div class="bg-orbit orbit-a"></div>
+    <div class="bg-orbit orbit-b"></div>
+
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand-block">
+          <img class="brand-logo" src="/trading-pro-logo.svg" alt="Trading Pro logo" />
+          <div>
+            <p class="brand-name">Trading Pro</p>
+            <p class="brand-sub">Predictive Terminal</p>
+          </div>
+        </div>
+
+        <div class="topbar-status">
+          <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Switch to light mode">
+            <span class="theme-toggle-track" aria-hidden="true">
+              <span class="theme-toggle-thumb"></span>
+            </span>
+            <span class="theme-toggle-label" id="themeToggleLabel">Dark</span>
+          </button>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="hero-panel" id="heroPanel">
+          <div class="hero-copy">
+            <p class="hero-kicker">DISCOVER THE MARKET</p>
+            <h1>The Future of Finance Visualized Today</h1>
+            <p>
+              Pick any AI Assistant and ask about any stock to get a prediction chart up to 30 days
+            </p>
+          </div>
+
+          <div class="model-pill-row" id="modelPillRow"></div>
+        </section>
+
+        <section class="composer-dock" id="composerDock">
+          <form class="composer-card" id="assistantForm">
+            <div class="composer-toolbar">
+              <label class="assistant-select-wrap" for="assistantModelSelect">
+                <select id="assistantModelSelect"></select>
+              </label>
+              <button id="refreshBtn" class="btn ghost icon-btn" type="button" title="Refresh market data" aria-label="Refresh market data">
+                <img src="/refresh-icon.svg" alt="" />
+              </button>
+            </div>
+
+            <div class="composer-main">
+              <button
+                class="composer-icon"
+                id="attachmentBtn"
+                type="button"
+                title="Add image or file"
+                aria-label="Add image or file"
+              >
+                +
+              </button>
+              <textarea
+                id="promptInput"
+                rows="1"
+                placeholder="What's next on your mind?"
+              ></textarea>
+              <button id="loadTickerBtn" class="composer-submit" type="submit">Analyze</button>
+            </div>
+
+            <input
+              id="attachmentInput"
+              class="sr-only"
+              type="file"
+              multiple
+              accept="image/*,.pdf,.csv,.txt,.md,.doc,.docx,.xls,.xlsx"
+            />
+            <div class="attachment-strip hidden" id="attachmentStrip" aria-live="polite"></div>
+
+            <div class="prompt-suggestions">
+              <button class="prompt-chip" type="button" data-prompt="Analyze TSLA with OpenAI for the next 30 days">
+                TSLA with OpenAI
+              </button>
+              <button class="prompt-chip" type="button" data-prompt="Show me NVIDIA with Gemini and compare the next 7 and 30 days">
+                NVDA with Gemini
+              </button>
+              <button class="prompt-chip" type="button" data-prompt="Study Amazon with DeepSeek and highlight downside risk">
+                AMZN with DeepSeek
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section class="results-shell hidden" id="resultsShell">
+          <section class="market-overview panel">
+            <div class="panel-header compact">
+              <h2>Market Overview</h2>
+              <p id="asOfText">Fetching live market data...</p>
+            </div>
+            <div class="market-grid" id="marketCards"></div>
+          </section>
+
+          <section class="dashboard-grid">
+            <article class="panel prediction-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Prediction Workspace</h2>
+                  <p class="panel-subtext" id="activeTickerLabel">Live analysis will appear here.</p>
+                </div>
+                <div class="ticker-chip-row" id="tickerSwitch"></div>
+              </div>
+
+              <div class="headline-row">
+                <div>
+                  <p class="ticker-title" id="tickerTitle">Ticker</p>
+                  <p class="price-line" id="priceLine">Loading latest quote...</p>
+                </div>
+                <div class="delta-pair">
+                  <div class="delta-pill" id="deltaPill">7D --</div>
+                  <div class="delta-pill secondary" id="deltaPill30">30D --</div>
+                </div>
+              </div>
+
+              <div class="chart-wrap">
+                <canvas id="priceChart" aria-label="Stock trajectory and AI prediction" role="img"></canvas>
+              </div>
+
+              <div class="metric-row">
+                <div class="metric-card">
+                  <p>AI Confidence</p>
+                  <h3 id="confidenceValue">--</h3>
+                </div>
+                <div class="metric-card">
+                  <p>7-Day Target</p>
+                  <h3 id="targetValue">--</h3>
+                </div>
+                <div class="metric-card">
+                  <p>30-Day Target</p>
+                  <h3 id="target30Value">--</h3>
+                </div>
+                <div class="metric-card">
+                  <p>Risk Level</p>
+                  <h3 id="riskValue">--</h3>
+                </div>
+              </div>
+
+              <div class="insights-list" id="insightsList"></div>
+            </article>
+
+            <aside class="panel watchlist-panel">
+              <div class="panel-header compact">
+                <h2>Quick Tickers</h2>
+                <p>Reuse the same assistant mode on another stock</p>
+              </div>
+              <ul id="watchlistItems" class="watchlist"></ul>
+            </aside>
+          </section>
+
+          <section class="lower-grid">
+            <article class="panel metrics-panel">
+              <div class="panel-header compact">
+                <h2>Trading Pro Snapshot</h2>
+                <p>Forecast engine and technical context</p>
+              </div>
+
+              <div class="snapshot-grid">
+                <div class="snapshot-card">
+                  <p>AI Score</p>
+                  <h3 id="aiScoreValue">--</h3>
+                </div>
+                <div class="snapshot-card">
+                  <p>Sentiment</p>
+                  <h3 id="sentimentValue">--</h3>
+                </div>
+                <div class="snapshot-card">
+                  <p>RSI (14)</p>
+                  <h3 id="rsiValue">--</h3>
+                </div>
+                <div class="snapshot-card">
+                  <p>Volatility</p>
+                  <h3 id="volatilityValue">--</h3>
+                </div>
+                <div class="snapshot-card">
+                  <p>Avg Volume (20D)</p>
+                  <h3 id="avgVolumeValue">--</h3>
+                </div>
+                <div class="snapshot-card">
+                  <p>Momentum (20D)</p>
+                  <h3 id="momentumValue">--</h3>
+                </div>
+                <div class="snapshot-card">
+                  <p>Prediction Engine</p>
+                  <h3 id="modelValue">--</h3>
+                </div>
+                <div class="snapshot-card">
+                  <p>Test MAE</p>
+                  <h3 id="testMaeValue">--</h3>
+                </div>
+              </div>
+            </article>
+
+            <article class="panel news-panel">
+              <div class="panel-header compact">
+                <h2>News + Sentiment Feed</h2>
+                <p>Context used to frame the outlook</p>
+              </div>
+              <ul id="newsList" class="news-list"></ul>
+              <button id="newsToggleBtn" class="news-toggle hidden" type="button">Show More</button>
+            </article>
+          </section>
+
+          <section class="geo-grid">
+            <article class="panel map-panel">
+              <div class="panel-header compact">
+                <h2>Geo Sentiment Map</h2>
+                <p id="mapProviderText">Loading mapping data...</p>
+              </div>
+              <div id="sentimentMap" class="map-canvas" aria-label="Geographic sentiment map"></div>
+              <div id="geoModeBar" class="map-mode-row" aria-label="Geographic map mode selector"></div>
+            </article>
+
+            <article class="panel region-panel">
+              <div class="panel-header compact">
+                <h2>Regional Signals</h2>
+                <p id="regionModeText">Mode-aware regional exposure and sentiment signals</p>
+              </div>
+              <ul id="regionList" class="region-list"></ul>
+            </article>
+          </section>
+        </section>
+      </main>
+    </div>
+  </body>
+</html>
