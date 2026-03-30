@@ -41,6 +41,7 @@ const FEATURE_LABELS = {
   Momentum20: "20D Momentum",
   GeoSignal: "Geo Signal",
   Sentiment: "News Sentiment",
+  LearningConfidence: "Learning Consensus",
 };
 const DRIVER_EXPLANATIONS = {
   "Prev Close": "This shows how the last closing price affects the forecast.",
@@ -61,6 +62,7 @@ const DRIVER_EXPLANATIONS = {
   "20D Momentum": "This shows whether the recent trend has been moving up or down.",
   "Geo Signal": "This shows whether global market exposure is helping or hurting the stock.",
   "News Sentiment": "This shows whether recent news is helping or hurting the stock.",
+  "Learning Consensus": "This shows how strongly similar historical setups agree with the current forecast.",
 };
 
 let activeTicker = WATCHLIST[0];
@@ -73,6 +75,7 @@ let geoTileLayer = null;
 let geoMarkers = [];
 let latestMapInsights = null;
 let activeGeoMode = "investments";
+let activeChartMode = "line";
 let lastScrollY = window.scrollY;
 let hasPromptHistory = false;
 let attachedFiles = [];
@@ -111,6 +114,7 @@ const elements = {
   deltaPill: document.getElementById("deltaPill"),
   deltaPill30: document.getElementById("deltaPill30"),
   historyRangeToggle: document.getElementById("historyRangeToggle"),
+  chartModeToggle: document.getElementById("chartModeToggle"),
   historyRangeLabel: document.getElementById("historyRangeLabel"),
   tradeCallCard: document.getElementById("tradeCallCard"),
   tradeCallAction: document.getElementById("tradeCallAction"),
@@ -137,11 +141,22 @@ const elements = {
   driverList: document.getElementById("driverList"),
   newsList: document.getElementById("newsList"),
   newsToggleBtn: document.getElementById("newsToggleBtn"),
-  mapProviderText: document.getElementById("mapProviderText"),
-  sentimentMap: document.getElementById("sentimentMap"),
-  geoModeBar: document.getElementById("geoModeBar"),
-  regionModeText: document.getElementById("regionModeText"),
-  regionList: document.getElementById("regionList"),
+  workspaceTrustLabel: document.getElementById("workspaceTrustLabel"),
+  workspaceTrustScore: document.getElementById("workspaceTrustScore"),
+  workspaceTrustMeter: document.getElementById("workspaceTrustMeter"),
+  workspaceRegimeValue: document.getElementById("workspaceRegimeValue"),
+  workspaceSetupValue: document.getElementById("workspaceSetupValue"),
+  workspaceBandValue: document.getElementById("workspaceBandValue"),
+  workspaceTrustNotes: document.getElementById("workspaceTrustNotes"),
+  scenarioList: document.getElementById("scenarioList"),
+  executionBiasValue: document.getElementById("executionBiasValue"),
+  executionEntryValue: document.getElementById("executionEntryValue"),
+  executionStopValue: document.getElementById("executionStopValue"),
+  executionTargetOneValue: document.getElementById("executionTargetOneValue"),
+  executionTargetTwoValue: document.getElementById("executionTargetTwoValue"),
+  executionRrValue: document.getElementById("executionRrValue"),
+  executionInvalidationValue: document.getElementById("executionInvalidationValue"),
+  analogList: document.getElementById("analogList"),
 };
 
 function sanitizeTicker(raw) {
@@ -196,6 +211,192 @@ function setTextIfPresent(element, value) {
   if (element) {
     element.textContent = value;
   }
+}
+
+function reliabilityLabel(score) {
+  if (score >= 72) {
+    return "High trust";
+  }
+  if (score >= 55) {
+    return "Moderate trust";
+  }
+  return "Caution";
+}
+
+function percentileBand(prediction) {
+  const baseReturn = Number(prediction.expectedReturn30dPct || 0);
+  const volatility = Math.max(Number(prediction.indicators?.volatilityPct || 0), 0.8);
+  const confidence = Number(prediction.confidencePct || 55);
+  const confidenceDrag = Math.max((100 - confidence) / 100, 0.08);
+  const swing = volatility * (0.85 + confidenceDrag);
+  return {
+    lowerPct: baseReturn - swing,
+    upperPct: baseReturn + swing,
+  };
+}
+
+function inferRegime(prediction) {
+  const rsi = Number(prediction.indicators?.rsi || 50);
+  const momentum = Number(prediction.indicators?.momentum20Pct || 0);
+  const volatility = Number(prediction.indicators?.volatilityPct || 0);
+
+  if (volatility >= 3.8) {
+    return "High-volatility expansion";
+  }
+  if (momentum >= 4 && rsi >= 58) {
+    return "Trend continuation";
+  }
+  if (momentum <= -4 && rsi <= 42) {
+    return "Downtrend pressure";
+  }
+  if (rsi > 68) {
+    return "Momentum extension";
+  }
+  if (rsi < 32) {
+    return "Mean-reversion rebound";
+  }
+  if (rsi >= 45 && rsi <= 55) {
+    return "Range-bound balance";
+  }
+  return "Transitional regime";
+}
+
+function inferSetup(prediction) {
+  const expected7d = Number(prediction.expectedReturn7dPct || 0);
+  const expected30d = Number(prediction.expectedReturn30dPct || 0);
+  const momentum = Number(prediction.indicators?.momentum20Pct || 0);
+
+  if (expected30d >= 0 && expected7d >= 0 && momentum >= 2.5) {
+    return "Pullback continuation";
+  }
+  if (expected30d >= 0 && expected7d < 0) {
+    return "Short-term dip, higher-timeframe recovery";
+  }
+  if (expected30d < 0 && expected7d < 0) {
+    return "Bearish continuation";
+  }
+  if (expected30d > 0 && momentum < 0) {
+    return "Early reversal attempt";
+  }
+  return "Balanced swing setup";
+}
+
+function buildReliability(prediction) {
+  let score = Number(prediction.confidencePct || 55);
+  if (prediction.learning?.enabled) {
+    score += 6;
+  }
+  if (typeof prediction.diagnostics?.testMAE === "number") {
+    score += 4;
+  }
+  if (prediction.model?.fallbackReason) {
+    score -= 14;
+  }
+  score = Math.round(clampNumber(score, 28, 92));
+
+  const notes = [];
+  const sampleCount = Number(prediction.learning?.horizons?.["7d"]?.sampleCount || 0);
+  if (prediction.learning?.enabled) {
+    notes.push(`Adaptive memory found ${sampleCount} similar setups feeding the 7-day view.`);
+  }
+  if (prediction.model?.fallbackReason) {
+    notes.push("Primary ML layer is unavailable, so this forecast is blending fallback signals and learned analogs.");
+  } else {
+    notes.push("Primary model stack is active for this forecast.");
+  }
+  const band = percentileBand(prediction);
+  notes.push(`The current 30-day distribution spans roughly ${formatPercent(band.lowerPct)} to ${formatPercent(band.upperPct)}.`);
+
+  return {
+    score,
+    label: reliabilityLabel(score),
+    notes,
+  };
+}
+
+function buildScenarios(prediction) {
+  const currentPrice = Number(prediction.currentPrice || 0);
+  const baseReturn = Number(prediction.expectedReturn30dPct || 0);
+  const confidence = Number(prediction.confidencePct || 55);
+  const volatility = Number(prediction.indicators?.volatilityPct || 0);
+  const bullProbability = Math.round(clampNumber(confidence + Math.max(baseReturn, 0) * 2.6, 18, 82));
+  const bearProbability = Math.round(clampNumber((100 - confidence) + Math.max(-baseReturn, 0) * 1.9, 10, 62));
+  const baseProbability = Math.max(100 - bullProbability - bearProbability, 12);
+  const bullReturn = baseReturn + Math.max(volatility * 1.7, 2.1);
+  const bearReturn = baseReturn - Math.max(volatility * 2.1, 2.8);
+
+  return [
+    {
+      label: "Bull",
+      tone: "bull",
+      probability: bullProbability,
+      movePct: bullReturn,
+      targetPrice: currentPrice * (1 + bullReturn / 100),
+    },
+    {
+      label: "Base",
+      tone: "base",
+      probability: baseProbability,
+      movePct: baseReturn,
+      targetPrice: currentPrice * (1 + baseReturn / 100),
+    },
+    {
+      label: "Bear",
+      tone: "bear",
+      probability: bearProbability,
+      movePct: bearReturn,
+      targetPrice: currentPrice * (1 + bearReturn / 100),
+    },
+  ];
+}
+
+function buildTradePlan(prediction) {
+  const currentPrice = Number(prediction.currentPrice || 0);
+  const dayChangePct = Math.abs(Number(prediction.dayChangePct || 0));
+  const volatility = Number(prediction.indicators?.volatilityPct || 1);
+  const expected30d = Number(prediction.expectedReturn30dPct || 0);
+  const bullish = expected30d >= 0;
+  const entryBuffer = Math.max(volatility * 0.35, 0.6);
+  const stopBuffer = Math.max(volatility * 1.3, 1.8);
+  const targetBuffer = Math.max(Math.abs(expected30d) * 0.58, 2.4);
+
+  let entryLow;
+  let entryHigh;
+  let stopPrice;
+  let targetOne;
+  let invalidation;
+
+  if (bullish) {
+    entryLow = currentPrice - entryBuffer;
+    entryHigh = currentPrice + Math.max(dayChangePct * 0.15, 0.45);
+    stopPrice = currentPrice - stopBuffer;
+    targetOne = currentPrice + targetBuffer * 0.65;
+    invalidation = "Lose the near-term pivot and close below the stop.";
+  } else {
+    entryLow = currentPrice - Math.max(dayChangePct * 0.15, 0.45);
+    entryHigh = currentPrice + entryBuffer;
+    stopPrice = currentPrice + stopBuffer;
+    targetOne = currentPrice - targetBuffer * 0.65;
+    invalidation = "Squeeze back above the stop with momentum confirmation.";
+  }
+
+  const targetTwo = Number(prediction.predictedPrice30d || prediction.predictedPrice7d || currentPrice);
+  const riskPerShare = Math.abs(entryHigh - stopPrice);
+  const rewardPerShare = Math.abs(targetTwo - entryHigh);
+
+  return {
+    bias: bullish ? "Long" : "Short",
+    entryZone: [entryLow, entryHigh],
+    stopPrice,
+    targetOne,
+    targetTwo,
+    riskReward: rewardPerShare / Math.max(riskPerShare, 0.01),
+    invalidation,
+  };
+}
+
+function buildAnalogMatches(prediction) {
+  return (prediction.learning?.horizons?.["7d"]?.matches || []).slice(0, 3);
 }
 
 function clampNumber(value, lower, upper) {
@@ -1074,6 +1275,103 @@ function renderAnalysisSummary(prediction, assistantProvider) {
   elements.analysisSummaryReasons.classList.toggle("hidden", reasons.length === 0);
 }
 
+function renderWorkspace(prediction) {
+  const reliability = buildReliability(prediction);
+  const regime = inferRegime(prediction);
+  const setup = inferSetup(prediction);
+  const band = percentileBand(prediction);
+  const scenarios = buildScenarios(prediction);
+  const tradePlan = buildTradePlan(prediction);
+  const analogs = buildAnalogMatches(prediction);
+
+  setTextIfPresent(elements.workspaceTrustLabel, `${reliability.label} in ${regime.toLowerCase()}`);
+  setTextIfPresent(elements.workspaceTrustScore, `${reliability.score}`);
+  setTextIfPresent(elements.workspaceRegimeValue, regime);
+  setTextIfPresent(elements.workspaceSetupValue, setup);
+  setTextIfPresent(
+    elements.workspaceBandValue,
+    `${formatPercent(band.lowerPct)} to ${formatPercent(band.upperPct)}`,
+  );
+  setMeterFill(elements.workspaceTrustMeter, reliability.score, reliability.score >= 70 ? "up" : reliability.score >= 55 ? "neutral" : "down");
+
+  if (elements.workspaceTrustNotes) {
+    elements.workspaceTrustNotes.innerHTML = "";
+    reliability.notes.forEach((note) => {
+      const item = document.createElement("li");
+      item.textContent = note;
+      elements.workspaceTrustNotes.appendChild(item);
+    });
+  }
+
+  if (elements.scenarioList) {
+    elements.scenarioList.innerHTML = "";
+    scenarios.forEach((scenario) => {
+      const card = document.createElement("article");
+      card.className = `workspace-scenario-card ${scenario.tone}`;
+      card.innerHTML = `
+        <div class="workspace-scenario-head">
+          <strong>${scenario.label}</strong>
+          <span>${scenario.probability}% probability</span>
+        </div>
+        <div class="workspace-scenario-values">
+          <div>
+            <span>Move</span>
+            <strong>${formatPercent(scenario.movePct)}</strong>
+          </div>
+          <div>
+            <span>Target</span>
+            <strong>${formatCurrency(scenario.targetPrice)}</strong>
+          </div>
+        </div>
+      `;
+      elements.scenarioList.appendChild(card);
+    });
+  }
+
+  setTextIfPresent(elements.executionBiasValue, tradePlan.bias);
+  setTextIfPresent(
+    elements.executionEntryValue,
+    `${formatCurrency(tradePlan.entryZone[0])} to ${formatCurrency(tradePlan.entryZone[1])}`,
+  );
+  setTextIfPresent(elements.executionStopValue, formatCurrency(tradePlan.stopPrice));
+  setTextIfPresent(elements.executionTargetOneValue, formatCurrency(tradePlan.targetOne));
+  setTextIfPresent(elements.executionTargetTwoValue, formatCurrency(tradePlan.targetTwo));
+  setTextIfPresent(elements.executionRrValue, `${tradePlan.riskReward.toFixed(2)}:1`);
+  setTextIfPresent(elements.executionInvalidationValue, tradePlan.invalidation);
+
+  if (elements.analogList) {
+    elements.analogList.innerHTML = "";
+    if (!analogs.length) {
+      const empty = document.createElement("article");
+      empty.className = "workspace-analog-card";
+      empty.innerHTML = "<strong>No analog data yet</strong><p>Similar setup matches will appear here as the learning layer finds cleaner comparisons.</p>";
+      elements.analogList.appendChild(empty);
+    } else {
+      analogs.forEach((analog) => {
+        const card = document.createElement("article");
+        card.className = "workspace-analog-card";
+        card.innerHTML = `
+          <div class="workspace-analog-head">
+            <strong>${formatDateLabel(analog.featureDate)}</strong>
+            <span>distance ${Number(analog.distance || 0).toFixed(3)}</span>
+          </div>
+          <div class="workspace-scenario-values">
+            <div>
+              <span>Resolved</span>
+              <strong>${formatDateLabel(analog.targetDate)}</strong>
+            </div>
+            <div>
+              <span>Realized</span>
+              <strong>${formatPercent(Number(analog.realizedReturnPct || 0))}</strong>
+            </div>
+          </div>
+        `;
+        elements.analogList.appendChild(card);
+      });
+    }
+  }
+}
+
 function renderPrediction(prediction, assistantLabel, assistantProvider) {
   const expected7d = Number(prediction.expectedReturn7dPct || 0);
   const expected30d = Number(prediction.expectedReturn30dPct || 0);
@@ -1156,26 +1454,34 @@ function renderPrediction(prediction, assistantLabel, assistantProvider) {
   renderPredictionMeters(prediction, expected7d, expected30d);
   renderAnalysisSummary(prediction, assistantProvider);
   renderDriverList(prediction);
+  renderWorkspace(prediction);
   renderChartFromPrediction(prediction);
 }
 
-function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
-  const canvas = document.getElementById("priceChart");
-  const theme = getThemeTokens();
-  if (typeof Chart === "undefined") {
-    const wrap = canvas?.parentElement;
-    if (wrap) {
-      wrap.innerHTML =
-        "<p style='color:#b8cae7;font-size:0.9rem;padding:1rem;'>Chart library failed to load. Forecast data is still available in the metric cards.</p>";
-    }
-    return;
-  }
+function buildCandlestickSeries(actualSeries) {
+  return actualSeries.map((point, index) => {
+    const prevClose = Number(actualSeries[index - 1]?.price ?? point.price);
+    const close = Number(point.price || 0);
+    const open = prevClose;
+    const spread = Math.max(Math.abs(close - open), close * 0.004);
+    const high = Math.max(open, close) + spread * 0.35;
+    const low = Math.min(open, close) - spread * 0.35;
+    return {
+      date: point.date,
+      open,
+      high,
+      low,
+      close,
+      up: close >= open,
+    };
+  });
+}
 
-  const context = canvas.getContext("2d");
-  const actualGradient = context.createLinearGradient(0, 0, 0, canvas.height || 360);
+function renderLineChart(context, actualSeries, forecastSeries, ticker, historyLabel, theme) {
+  const actualGradient = context.createLinearGradient(0, 0, 0, context.canvas.height || 360);
   actualGradient.addColorStop(0, "rgba(74, 157, 255, 0.22)");
   actualGradient.addColorStop(1, "rgba(74, 157, 255, 0.02)");
-  const forecastGradient = context.createLinearGradient(0, 0, 0, canvas.height || 360);
+  const forecastGradient = context.createLinearGradient(0, 0, 0, context.canvas.height || 360);
   forecastGradient.addColorStop(0, "rgba(85, 227, 194, 0.18)");
   forecastGradient.addColorStop(1, "rgba(85, 227, 194, 0.02)");
 
@@ -1185,15 +1491,11 @@ function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
   const actualData = actualSeries.map((point) => point.price);
   actualData.push(...Array(forecastSeries.length).fill(null));
 
-  const forecastData = Array(actualSeries.length - 1).fill(null);
+  const forecastData = Array(Math.max(actualSeries.length - 1, 0)).fill(null);
   forecastData.push(actualSeries[actualSeries.length - 1]?.price || null);
   forecastData.push(...forecastSeries.map((point) => point.price));
 
-  if (priceChart) {
-    priceChart.destroy();
-  }
-
-  priceChart = new Chart(context, {
+  return new Chart(context, {
     type: "line",
     data: {
       labels,
@@ -1267,6 +1569,130 @@ function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
   });
 }
 
+function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, historyLabel, theme) {
+  const candles = buildCandlestickSeries(actualSeries);
+  const labels = actualSeries.map((point) => formatDateLabel(point.date));
+  labels.push(...forecastSeries.map((point) => formatDateLabel(point.date)));
+
+  const wickData = candles.map((candle) => [candle.low, candle.high]);
+  wickData.push(...Array(forecastSeries.length).fill(null));
+
+  const bodyData = candles.map((candle) => [candle.open, candle.close]);
+  bodyData.push(...Array(forecastSeries.length).fill(null));
+
+  const bodyColors = candles.map((candle) => (candle.up ? "rgba(45, 211, 159, 0.92)" : "rgba(255, 111, 125, 0.92)"));
+  bodyColors.push(...Array(forecastSeries.length).fill("rgba(0,0,0,0)"));
+
+  const forecastData = Array(Math.max(actualSeries.length - 1, 0)).fill(null);
+  forecastData.push(actualSeries[actualSeries.length - 1]?.price || null);
+  forecastData.push(...forecastSeries.map((point) => point.price));
+
+  return new Chart(context, {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Wick",
+          data: wickData,
+          backgroundColor: candles.map((candle) => (candle.up ? "rgba(45, 211, 159, 0.35)" : "rgba(255, 111, 125, 0.35)")).concat(Array(forecastSeries.length).fill("rgba(0,0,0,0)")),
+          borderSkipped: false,
+          borderRadius: 4,
+          barPercentage: 0.12,
+          categoryPercentage: 0.88,
+        },
+        {
+          label: "Candle",
+          data: bodyData,
+          backgroundColor: bodyColors,
+          borderColor: bodyColors,
+          borderSkipped: false,
+          borderRadius: 6,
+          barPercentage: 0.56,
+          categoryPercentage: 0.88,
+        },
+        {
+          type: "line",
+          label: "30D Forecast",
+          data: forecastData,
+          borderColor: "rgba(255, 191, 105, 1)",
+          backgroundColor: "rgba(255, 191, 105, 0.12)",
+          borderWidth: 2,
+          borderDash: [7, 4],
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          tension: 0.25,
+        },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      animation: { duration: 450 },
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          labels: {
+            color: theme.legendColor,
+            usePointStyle: true,
+          },
+          filter(item) {
+            return item.text !== "Wick";
+          },
+        },
+        title: {
+          display: true,
+          text: `${ticker} ${historyLabel} Candles + 30-Day Forecast`,
+          color: theme.titleColor,
+          font: { family: "Sora", size: 13 },
+        },
+      },
+      scales: {
+        x: {
+          stacked: false,
+          ticks: {
+            color: theme.tickColor,
+            maxRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: 12,
+          },
+          grid: { color: theme.gridColor },
+        },
+        y: {
+          ticks: {
+            color: theme.tickColor,
+            callback(value) {
+              return `$${Number(value).toFixed(0)}`;
+            },
+          },
+          grid: { color: theme.gridColor },
+        },
+      },
+    },
+  });
+}
+
+function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
+  const canvas = document.getElementById("priceChart");
+  const theme = getThemeTokens();
+  if (typeof Chart === "undefined") {
+    const wrap = canvas?.parentElement;
+    if (wrap) {
+      wrap.innerHTML =
+        "<p style='color:#b8cae7;font-size:0.9rem;padding:1rem;'>Chart library failed to load. Forecast data is still available in the metric cards.</p>";
+    }
+    return;
+  }
+
+  const context = canvas.getContext("2d");
+  if (priceChart) {
+    priceChart.destroy();
+  }
+
+  priceChart = activeChartMode === "candles"
+    ? renderCandlestickChart(context, actualSeries, forecastSeries, ticker, historyLabel, theme)
+    : renderLineChart(context, actualSeries, forecastSeries, ticker, historyLabel, theme);
+}
+
 function historyRangeLabel(rangeId) {
   return {
     "3m": "3M",
@@ -1274,6 +1700,33 @@ function historyRangeLabel(rangeId) {
     "1y": "1Y",
     "2y": "2Y",
   }[rangeId] || "6M";
+}
+
+function renderChartModeControls(prediction) {
+  if (!elements.chartModeToggle) {
+    return;
+  }
+
+  const modes = [
+    { id: "line", label: "Line" },
+    { id: "candles", label: "Candles" },
+  ];
+
+  elements.chartModeToggle.innerHTML = "";
+
+  modes.forEach((mode) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `history-range-btn chart-mode-btn${mode.id === activeChartMode ? " active" : ""}`;
+    button.dataset.chartMode = mode.id;
+    button.textContent = mode.label;
+    button.addEventListener("click", () => {
+      activeChartMode = mode.id;
+      renderChartModeControls(prediction);
+      renderChartFromPrediction(prediction);
+    });
+    elements.chartModeToggle.appendChild(button);
+  });
 }
 
 function renderHistoryRangeControls(prediction) {
@@ -1306,6 +1759,7 @@ function renderHistoryRangeControls(prediction) {
     elements.historyRangeToggle.appendChild(button);
   });
 
+  renderChartModeControls(prediction);
   elements.historyRangeLabel.textContent = `History: ${historyRangeLabel(activeHistoryRange)} · Forecast: 30D`;
 }
 
@@ -1363,9 +1817,9 @@ function renderDriverList(prediction) {
       coefficient: -Math.abs(Number(prediction.indicators?.volatilityPct || 0)),
     },
     {
-      feature: "GeoSignal",
-      importance: Math.abs(Number(prediction.geoSentiment?.score || 0)) * 8,
-      coefficient: Number(prediction.geoSentiment?.score || 0),
+      feature: "LearningConfidence",
+      importance: Math.abs(Number(prediction.learning?.horizons?.["7d"]?.consensusPct || 0)) / 10,
+      coefficient: Number(prediction.learning?.horizons?.["7d"]?.consensusPct || 0) - 50,
     },
     {
       feature: "Sentiment",
@@ -1472,7 +1926,6 @@ async function runAssistantQuery(promptText) {
     renderSession(payload);
     renderPrediction(payload.prediction, payload.assistantModel?.label || currentAssistantLabel(), payload.assistantProvider || null);
     renderNews(payload.news?.items || []);
-    renderMapInsights(payload.prediction?.mapInsights || null);
     hideAnalysisLoading();
 
     if (watchlistSnapshot.length) {
@@ -1586,14 +2039,6 @@ function bindEvents() {
   elements.newsToggleBtn?.addEventListener("click", () => {
     newsExpanded = !newsExpanded;
     renderNews(latestNewsItems);
-  });
-
-  elements.geoModeBar?.addEventListener("click", (event) => {
-    const button = event.target.closest(".map-mode-btn");
-    if (!button || !button.dataset.mode) {
-      return;
-    }
-    applyGeoMode(button.dataset.mode);
   });
 
   window.addEventListener("scroll", syncComposerStateOnScroll, { passive: true });

@@ -1267,6 +1267,26 @@ body[data-theme="light"] .icon-btn {
   flex-wrap: wrap;
 }
 
+.chart-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+}
+
+.chart-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.chart-mode-btn {
+  min-width: 92px;
+}
+
 .analysis-main .chart-toolbar {
   padding: 18px 18px 14px;
   border-bottom: 1px solid rgba(102, 143, 214, 0.1);
@@ -1608,7 +1628,8 @@ body[data-theme="light"] .icon-btn {
 }
 
 .lower-grid,
-.geo-grid {
+.geo-grid,
+.workspace-grid {
   display: grid;
   gap: 18px;
 }
@@ -1622,9 +1643,151 @@ body[data-theme="light"] .icon-btn {
   grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
 }
 
+.workspace-grid {
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+}
+
 .metrics-panel,
 .news-panel {
   align-self: start;
+}
+
+.workspace-panel {
+  min-width: 0;
+}
+
+.workspace-hero-row {
+  display: grid;
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.workspace-score-card,
+.workspace-pill,
+.workspace-scenario-card,
+.workspace-execution-card,
+.workspace-analog-card {
+  border: 1px solid rgba(105, 144, 212, 0.16);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 36%),
+    linear-gradient(180deg, rgba(12, 27, 49, 0.95), rgba(8, 18, 33, 0.96));
+}
+
+.workspace-score-card {
+  padding: 18px;
+}
+
+.workspace-score-card p,
+.workspace-pill span,
+.workspace-scenario-card span,
+.workspace-execution-card span,
+.workspace-analog-card span {
+  display: block;
+  color: var(--text-muted);
+  font-size: 0.77rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.workspace-score-card h3 {
+  margin: 12px 0 14px;
+  font-size: 2rem;
+}
+
+.workspace-pill-grid,
+.workspace-execution-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.workspace-pill-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.workspace-pill {
+  padding: 16px;
+}
+
+.workspace-pill strong,
+.workspace-execution-card strong,
+.workspace-scenario-values strong,
+.workspace-analog-card strong {
+  display: block;
+  margin-top: 8px;
+  color: var(--text);
+  font-size: 1.04rem;
+}
+
+.workspace-note-list,
+.workspace-scenario-list,
+.workspace-analog-list {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.workspace-note-list li {
+  border: 1px solid rgba(105, 144, 212, 0.14);
+  border-radius: 18px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.workspace-scenario-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.workspace-scenario-card,
+.workspace-analog-card,
+.workspace-execution-card {
+  padding: 16px;
+}
+
+.workspace-scenario-card.bull {
+  border-color: rgba(57, 213, 147, 0.34);
+}
+
+.workspace-scenario-card.base {
+  border-color: rgba(98, 162, 255, 0.28);
+}
+
+.workspace-scenario-card.bear {
+  border-color: rgba(255, 112, 125, 0.34);
+}
+
+.workspace-scenario-head,
+.workspace-analog-head,
+.workspace-scenario-values {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.workspace-scenario-values {
+  margin-top: 12px;
+  align-items: flex-start;
+}
+
+.workspace-execution-grid {
+  margin-top: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.workspace-execution-note {
+  margin: 14px 0 0;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.workspace-analog-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .drivers-block {
@@ -1941,7 +2104,8 @@ body[data-theme="light"] .map-mode-btn.active[data-mode="affected"] {
   .analysis-stage,
   .dashboard-grid,
   .lower-grid,
-  .geo-grid {
+  .geo-grid,
+  .workspace-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -2043,7 +2207,12 @@ body[data-theme="light"] .map-mode-btn.active[data-mode="affected"] {
 
   .market-grid,
   .metric-row,
-  .snapshot-grid {
+  .snapshot-grid,
+  .workspace-scenario-list,
+  .workspace-analog-list,
+  .workspace-execution-grid,
+  .workspace-pill-grid,
+  .workspace-hero-row {
     grid-template-columns: 1fr;
   }
 
@@ -2053,6 +2222,15 @@ body[data-theme="light"] .map-mode-btn.active[data-mode="affected"] {
 
   .analysis-summary .metric-row {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .chart-toolbar-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .chart-mode-toggle {
+    justify-content: flex-start;
   }
 
   .analysis-main .chart-wrap {
