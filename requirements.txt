@@ -1,1 +1,2 @@
+psycopg[binary]>=3.2,<3.3
 scikit-learn>=1.4,<1.7

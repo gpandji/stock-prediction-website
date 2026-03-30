@@ -1,0 +1,28 @@
+databases:
+  - name: trading-pro-db
+    plan: free
+
+services:
+  - type: web
+    name: trading-pro
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.2
+      - key: HOST
+        value: 0.0.0.0
+      - key: NEWS_API_PROVIDER
+        value: auto
+      - key: PREDICTION_CACHE_TTL_SECONDS
+        value: 300
+      - key: PREDICTION_REFRESH_INTERVAL_SECONDS
+        value: 300
+      - key: PREDICTION_WARM_TICKERS
+        value: TSLA,NVDA,AMZN,AAPL,MSFT,GOOGL
+      - key: DATABASE_URL
+        fromDatabase:
+          name: trading-pro-db
+          property: connectionString
