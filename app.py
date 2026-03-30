@@ -40,6 +40,9 @@ NEWS_API_KEY = os.environ.get("NEWSAPI_KEY", "").strip()
 NEWS_API_PROVIDER = os.environ.get("NEWS_API_PROVIDER", "auto").strip().lower()
 DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
 PREDICTION_CACHE_TTL_SECONDS = max(60, int(os.environ.get("PREDICTION_CACHE_TTL_SECONDS", "300") or "300"))
+MARKET_OVERVIEW_CACHE_TTL_SECONDS = max(
+    60, int(os.environ.get("MARKET_OVERVIEW_CACHE_TTL_SECONDS", "300") or "300")
+)
 PREDICTION_REFRESH_INTERVAL_SECONDS = max(
     60, int(os.environ.get("PREDICTION_REFRESH_INTERVAL_SECONDS", "300") or "300")
 )
@@ -118,6 +121,7 @@ ASSISTANT_PROVIDER_CONFIG = {
 MAX_CHART_HISTORY_DAYS = 504
 DEFAULT_CHART_RANGE = "6m"
 CHART_RANGE_OPTIONS = [
+    {"id": "1m", "label": "1M", "days": 21},
     {"id": "3m", "label": "3M", "days": 63},
     {"id": "6m", "label": "6M", "days": 126},
     {"id": "1y", "label": "1Y", "days": 252},
@@ -651,6 +655,40 @@ def init_postgres():
                         )
                         """
                     )
+                    cur.execute(
+                        """
+                        create table if not exists market_overview_cache (
+                            cache_key text primary key,
+                            payload_json jsonb not null,
+                            generated_at timestamptz not null default now()
+                        )
+                        """
+                    )
+                    cur.execute(
+                        """
+                        create table if not exists prediction_snapshots (
+                            id bigserial primary key,
+                            ticker text not null,
+                            source text not null default 'live',
+                            payload_json jsonb not null,
+                            generated_at timestamptz not null default now()
+                        )
+                        """
+                    )
+                    cur.execute(
+                        """
+                        create table if not exists assistant_query_log (
+                            id bigserial primary key,
+                            prompt_text text not null,
+                            ticker text not null,
+                            assistant_model text not null,
+                            provider_used boolean not null default false,
+                            confidence_pct integer,
+                            expected_return_30d_pct double precision,
+                            created_at timestamptz not null default now()
+                        )
+                        """
+                    )
             POSTGRES_READY = True
             POSTGRES_STATUS["lastInitError"] = None
             return True
@@ -768,11 +806,128 @@ def store_prediction_in_postgres(ticker, prediction):
     return True
 
 
+def store_prediction_snapshot_in_postgres(ticker, prediction, source="live"):
+    ticker = sanitize_ticker(ticker)
+    if not init_postgres():
+        return False
+
+    clean_prediction = dict(prediction)
+    clean_prediction.pop("cache", None)
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into prediction_snapshots (ticker, source, payload_json)
+                values (%s, %s, %s::jsonb)
+                """,
+                (ticker, source, json.dumps(clean_prediction)),
+            )
+    return True
+
+
+def load_cached_market_overview_from_postgres(max_age_seconds=None):
+    if not init_postgres():
+        return None
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select payload_json, generated_at
+                from market_overview_cache
+                where cache_key = %s
+                """,
+                ("default",),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        return None
+
+    payload, generated_at = row
+    generated_dt = parse_iso_datetime(generated_at)
+    if max_age_seconds is not None and generated_dt:
+        age_seconds = (datetime.utcnow() - generated_dt.replace(tzinfo=None)).total_seconds()
+        if age_seconds > max_age_seconds:
+            return None
+
+    return payload
+
+
+def store_market_overview_in_postgres(payload):
+    if not init_postgres():
+        return False
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into market_overview_cache (cache_key, payload_json, generated_at)
+                values (%s, %s::jsonb, now())
+                on conflict (cache_key)
+                do update set
+                    payload_json = excluded.payload_json,
+                    generated_at = excluded.generated_at
+                """,
+                ("default", json.dumps(payload)),
+            )
+    return True
+
+
+def log_assistant_query_in_postgres(prompt_text, ticker, assistant_model, prediction, provider_used=False):
+    if not init_postgres():
+        return False
+
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                insert into assistant_query_log (
+                    prompt_text,
+                    ticker,
+                    assistant_model,
+                    provider_used,
+                    confidence_pct,
+                    expected_return_30d_pct
+                )
+                values (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    prompt_text,
+                    sanitize_ticker(ticker),
+                    str(assistant_model or ""),
+                    bool(provider_used),
+                    int(safe_float(prediction.get("confidencePct"), 0)),
+                    float(safe_float(prediction.get("expectedReturn30dPct"), 0.0)),
+                ),
+            )
+    return True
+
+
+def fetch_postgres_usage_summary():
+    if not init_postgres():
+        return {}
+
+    summary = {}
+    with get_postgres_connection() as conn:
+        with conn.cursor() as cur:
+            for key, table_name in (
+                ("predictionSnapshots", "prediction_snapshots"),
+                ("assistantQueries", "assistant_query_log"),
+            ):
+                cur.execute(f"select count(*) from {table_name}")
+                row = cur.fetchone()
+                summary[key] = int(row[0]) if row else 0
+    return summary
+
+
 def build_prediction_live(ticker):
     prediction = build_prediction(ticker)
     if POSTGRES_ENABLED:
         try:
             store_prediction_in_postgres(ticker, prediction)
+            store_prediction_snapshot_in_postgres(ticker, prediction, source="live")
         except Exception as exc:
             POSTGRES_STATUS["lastRefreshError"] = str(exc)
     return stamp_prediction_cache_metadata(prediction, "live", datetime.utcnow(), stale=False)
@@ -2731,6 +2886,16 @@ def build_stock_payload(ticker, days=120):
 
 
 def build_market_overview():
+    if POSTGRES_ENABLED:
+        try:
+            cached_payload = load_cached_market_overview_from_postgres(
+                max_age_seconds=MARKET_OVERVIEW_CACHE_TTL_SECONDS
+            )
+            if cached_payload:
+                return cached_payload
+        except Exception:
+            pass
+
     indices = []
     latest_date = ""
 
@@ -2752,7 +2917,15 @@ def build_market_overview():
             }
         )
 
-    return {"asOf": latest_date, "indices": indices}
+    payload = {"asOf": latest_date, "indices": indices}
+
+    if POSTGRES_ENABLED:
+        try:
+            store_market_overview_in_postgres(payload)
+        except Exception:
+            pass
+
+    return payload
 
 
 def build_assistant_query_response(prompt_text, selected_model):
@@ -2778,7 +2951,7 @@ def build_assistant_query_response(prompt_text, selected_model):
             f"Trading Pro used its local forecast engine for {ticker}."
         )
 
-    return {
+    response_payload = {
         "prompt": (prompt_text or "").strip(),
         "ticker": ticker,
         "assistantModel": assistant_model,
@@ -2787,6 +2960,20 @@ def build_assistant_query_response(prompt_text, selected_model):
         "prediction": prediction,
         "news": {"ticker": ticker, "items": news_items},
     }
+
+    if POSTGRES_ENABLED:
+        try:
+            log_assistant_query_in_postgres(
+                prompt_text,
+                ticker,
+                assistant_model.get("id", selected_model),
+                prediction,
+                provider_used=bool((prediction.get("assistantProvider") or {}).get("used")),
+            )
+        except Exception:
+            pass
+
+    return response_payload
 
 
 class AppHandler(SimpleHTTPRequestHandler):
@@ -2824,6 +3011,12 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         try:
             if parsed.path == "/api/health":
+                postgres_summary = {}
+                if POSTGRES_ENABLED and POSTGRES_READY:
+                    try:
+                        postgres_summary = fetch_postgres_usage_summary()
+                    except Exception:
+                        postgres_summary = {}
                 self.send_json(
                     {
                         "status": "ok",
@@ -2836,9 +3029,11 @@ class AppHandler(SimpleHTTPRequestHandler):
                             "warmTickers": PREDICTION_WARM_TICKERS,
                             "ttlSeconds": PREDICTION_CACHE_TTL_SECONDS,
                             "refreshIntervalSeconds": PREDICTION_REFRESH_INTERVAL_SECONDS,
+                            "marketOverviewTtlSeconds": MARKET_OVERVIEW_CACHE_TTL_SECONDS,
                             "lastInitError": POSTGRES_STATUS["lastInitError"],
                             "lastRefreshAt": POSTGRES_STATUS["lastRefreshAt"],
                             "lastRefreshError": POSTGRES_STATUS["lastRefreshError"],
+                            "usage": postgres_summary,
                         },
                     }
                 )

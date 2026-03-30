@@ -16,6 +16,7 @@ const WATCHLIST_META = {
 };
 const THEME_STORAGE_KEY = "trading-pro-theme";
 const HISTORY_RANGE_DAYS = {
+  "1m": 21,
   "3m": 63,
   "6m": 126,
   "1y": 252,
@@ -214,10 +215,10 @@ function setTextIfPresent(element, value) {
 }
 
 function reliabilityLabel(score) {
-  if (score >= 72) {
+  if (score >= 64) {
     return "High trust";
   }
-  if (score >= 55) {
+  if (score >= 46) {
     return "Moderate trust";
   }
   return "Caution";
@@ -282,27 +283,35 @@ function inferSetup(prediction) {
 }
 
 function buildReliability(prediction) {
-  let score = Number(prediction.confidencePct || 55);
+  let score = Number(prediction.confidencePct || 55) - 24;
   if (prediction.learning?.enabled) {
-    score += 6;
+    score += 3;
   }
   if (typeof prediction.diagnostics?.testMAE === "number") {
-    score += 4;
+    score += 2;
   }
   if (prediction.model?.fallbackReason) {
-    score -= 14;
+    score -= 18;
+  } else {
+    score -= 6;
   }
-  score = Math.round(clampNumber(score, 28, 92));
+  const sampleCount = Number(prediction.learning?.horizons?.["7d"]?.sampleCount || 0);
+  if (sampleCount < 10) {
+    score -= 8;
+  }
+  if (Number(prediction.indicators?.volatilityPct || 0) >= 2.2) {
+    score -= 7;
+  }
+  score = Math.round(clampNumber(score, 12, 78));
 
   const notes = [];
-  const sampleCount = Number(prediction.learning?.horizons?.["7d"]?.sampleCount || 0);
   if (prediction.learning?.enabled) {
     notes.push(`Adaptive memory found ${sampleCount} similar setups feeding the 7-day view.`);
   }
   if (prediction.model?.fallbackReason) {
     notes.push("Primary ML layer is unavailable, so this forecast is blending fallback signals and learned analogs.");
   } else {
-    notes.push("Primary model stack is active for this forecast.");
+    notes.push("Even with the primary model stack active, the trust score stays conservative until the setup proves itself.");
   }
   const band = percentileBand(prediction);
   notes.push(`The current 30-day distribution spans roughly ${formatPercent(band.lowerPct)} to ${formatPercent(band.upperPct)}.`);
@@ -1695,6 +1704,7 @@ function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
 
 function historyRangeLabel(rangeId) {
   return {
+    "1m": "1M Daily",
     "3m": "3M",
     "6m": "6M",
     "1y": "1Y",
@@ -1737,6 +1747,7 @@ function renderHistoryRangeControls(prediction) {
   const ranges = prediction?.chart?.ranges?.length
     ? prediction.chart.ranges
     : [
+        { id: "1m", label: "1M" },
         { id: "3m", label: "3M" },
         { id: "6m", label: "6M" },
         { id: "1y", label: "1Y" },
