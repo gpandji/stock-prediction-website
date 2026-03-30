@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import csv
+import hashlib
 import json
 import math
 import os
@@ -23,7 +24,7 @@ except Exception:
     SKLEARN_AVAILABLE = False
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = ROOT_DIR
+STATIC_DIR = os.path.join(ROOT_DIR, "static")
 CACHE = {}
 APP_USER_AGENT = "TradePro-AI/1.2 (+https://local-app)"
 NEWS_API_KEY = os.environ.get("NEWSAPI_KEY", "").strip()
@@ -39,11 +40,60 @@ MARKET_SYMBOLS = [
 ASSISTANT_MODELS = [
     {"id": "openai", "label": "OpenAI"},
     {"id": "gemini", "label": "Gemini"},
-    {"id": "deepseek", "label": "DeepSeek"},
     {"id": "claude", "label": "Claude"},
     {"id": "grok", "label": "Grok"},
     {"id": "perplexity", "label": "Perplexity"},
 ]
+
+ASSISTANT_PROVIDER_CONFIG = {
+    "openai": {
+        "apiKeyEnv": "OPENAI_API_KEY",
+        "modelEnv": "OPENAI_MODEL",
+        "defaultModel": "gpt-5.4",
+        "endpoint": "https://api.openai.com/v1/responses",
+        "transport": "openai_responses",
+    },
+    "gemini": {
+        "apiKeyEnv": "GEMINI_API_KEY",
+        "modelEnv": "GEMINI_MODEL",
+        "defaultModel": "gemini-2.5-flash",
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+        "transport": "gemini_generate_content",
+    },
+    "claude": {
+        "apiKeyEnv": "ANTHROPIC_API_KEY",
+        "modelEnv": "ANTHROPIC_MODEL",
+        "defaultModel": "claude-sonnet-4-20250514",
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "transport": "anthropic_messages",
+    },
+    "grok": {
+        "apiKeyEnv": "XAI_API_KEY",
+        "modelEnv": "XAI_MODEL",
+        "defaultModel": "grok-4",
+        "endpoint": "https://api.x.ai/v1/chat/completions",
+        "transport": "openai_chat_compatible",
+    },
+    "perplexity": {
+        "apiKeyEnv": "PERPLEXITY_API_KEY",
+        "modelEnv": "PERPLEXITY_MODEL",
+        "defaultModel": "sonar-pro",
+        "endpoint": "https://api.perplexity.ai/v1/sonar",
+        "transport": "perplexity_sonar",
+    },
+}
+
+MAX_CHART_HISTORY_DAYS = 504
+DEFAULT_CHART_RANGE = "6m"
+CHART_RANGE_OPTIONS = [
+    {"id": "3m", "label": "3M", "days": 63},
+    {"id": "6m", "label": "6M", "days": 126},
+    {"id": "1y", "label": "1Y", "days": 252},
+    {"id": "2y", "label": "2Y", "days": MAX_CHART_HISTORY_DAYS},
+]
+SELF_LEARNING_LOOKBACK_ROWS = 220
+SELF_LEARNING_MIN_ROWS = 36
+SELF_LEARNING_MAX_ANALOGS = 12
 
 TICKER_HEADQUARTERS_QUERY = {
     "TSLA": "Tesla Headquarters Austin Texas",
@@ -67,6 +117,22 @@ TICKER_HQ_FALLBACK = {
     "META": (37.4848, -122.1484),
     "NFLX": (37.2577, -122.0325),
     "LMT": (38.9807, -77.1003),
+}
+
+TICKER_COMPANY_NAMES = {
+    "TSLA": "Tesla",
+    "NVDA": "NVIDIA",
+    "AMZN": "Amazon",
+    "AAPL": "Apple",
+    "MSFT": "Microsoft",
+    "GOOGL": "Google",
+    "META": "Meta",
+    "NFLX": "Netflix",
+    "LMT": "Lockheed Martin",
+    "SPY": "SPDR S&P 500 ETF",
+    "QQQ": "Invesco QQQ",
+    "DIA": "SPDR Dow Jones ETF",
+    "IWM": "iShares Russell 2000 ETF",
 }
 
 REGION_HUBS = {
@@ -288,6 +354,13 @@ def safe_float(value, fallback=0.0):
         return fallback
 
 
+def safe_mean(values, fallback=0.0):
+    cleaned = [safe_float(value) for value in values if value is not None]
+    if not cleaned:
+        return fallback
+    return sum(cleaned) / len(cleaned)
+
+
 def pct_change(current, previous):
     if previous == 0:
         return 0.0
@@ -305,8 +378,23 @@ def normalize_assistant_model(raw_model):
     raw_value = (raw_model or "openai").strip().lower()
     for item in ASSISTANT_MODELS:
         if raw_value in (item["id"], item["label"].lower()):
-            return item
-    return ASSISTANT_MODELS[0]
+            assistant_model = dict(item)
+            return enrich_assistant_model(assistant_model)
+    return enrich_assistant_model(dict(ASSISTANT_MODELS[0]))
+
+
+def enrich_assistant_model(assistant_model):
+    model_id = assistant_model["id"]
+    config = ASSISTANT_PROVIDER_CONFIG.get(model_id, {})
+    api_key = os.environ.get(config.get("apiKeyEnv", ""), "").strip()
+    model_name = os.environ.get(config.get("modelEnv", ""), "").strip() or config.get("defaultModel", "")
+
+    assistant_model["providerModel"] = model_name
+    assistant_model["apiConfigured"] = bool(api_key)
+    assistant_model["apiKeyEnv"] = config.get("apiKeyEnv", "")
+    assistant_model["transport"] = config.get("transport", "")
+    assistant_model["endpoint"] = config.get("endpoint", "")
+    return assistant_model
 
 
 def infer_ticker_from_prompt(prompt_text):
@@ -331,29 +419,47 @@ def infer_ticker_from_prompt(prompt_text):
         tokens.append("".join(current))
 
     ignored_tokens = {
+        "a",
         "about",
         "ai",
         "analyze",
         "analysis",
         "and",
+        "are",
+        "bad",
+        "best",
+        "buy",
+        "can",
+        "check",
+        "claude",
         "compare",
+        "could",
         "days",
         "day",
-        "deepseek",
+        "do",
+        "does",
+        "find",
         "forecast",
         "for",
         "from",
         "gemini",
         "give",
         "grok",
+        "good",
+        "how",
         "in",
+        "is",
         "look",
+        "latest",
         "market",
         "me",
+        "mind",
         "month",
         "months",
+        "my",
         "next",
         "of",
+        "on",
         "openai",
         "outlook",
         "perplexity",
@@ -362,28 +468,61 @@ def infer_ticker_from_prompt(prompt_text):
         "prediction",
         "predictions",
         "price",
+        "should",
         "show",
+        "search",
         "stock",
         "stocks",
         "study",
         "tell",
         "the",
+        "this",
         "to",
+        "use",
+        "used",
         "using",
         "week",
         "weeks",
+        "what",
+        "whats",
+        "when",
+        "where",
+        "which",
+        "why",
         "with",
+        "would",
         "year",
         "years",
+        "you",
     }
 
+    known_tickers = set(PROMPT_TICKER_ALIASES.values())
+    known_tickers.update(ticker for ticker, _name in MARKET_SYMBOLS)
+    known_tickers.update(TICKER_HEADQUARTERS_QUERY.keys())
+
     for token in tokens:
-        if token.lower() in ignored_tokens:
+        sanitized = sanitize_ticker(token)
+        if sanitized in known_tickers:
+            return sanitized
+
+    for token in tokens:
+        token_lc = token.lower()
+        sanitized = sanitize_ticker(token)
+        if token_lc in ignored_tokens or sanitized in ("", "AI"):
+            continue
+        if 1 <= len(sanitized) <= 5 and token == token.upper() and any(ch.isalpha() for ch in sanitized):
+            return sanitized
+
+    for token in tokens:
+        token_lc = token.lower()
+        if token_lc in ignored_tokens:
             continue
         sanitized = sanitize_ticker(token)
         if not any(ch.isalpha() for ch in sanitized):
             continue
-        if 1 <= len(sanitized) <= 5 and sanitized not in ("AI",):
+        if len(sanitized) == 1:
+            continue
+        if 2 <= len(sanitized) <= 5 and sanitized not in ("AI",):
             return sanitized
 
     return "TSLA"
@@ -421,6 +560,21 @@ def fetch_url(url, timeout=12, headers=None):
     )
     with urlopen(req, timeout=timeout) as response:
         return response.read()
+
+
+def fetch_json_post(url, payload, timeout=35, headers=None):
+    final_headers = {
+        "User-Agent": APP_USER_AGENT,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    if headers:
+        final_headers.update(headers)
+
+    raw_payload = json.dumps(payload).encode("utf-8")
+    req = Request(url, data=raw_payload, headers=final_headers, method="POST")
+    with urlopen(req, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8", errors="ignore"))
 
 
 def cached(key, ttl_seconds, loader):
@@ -481,7 +635,7 @@ def fetch_stooq_history(ticker):
     return rows
 
 
-def fallback_history(ticker, points=250):
+def fallback_history(ticker, points=MAX_CHART_HISTORY_DAYS + 40):
     ticker = sanitize_ticker(ticker)
     seed = sum((idx + 1) * ord(ch) for idx, ch in enumerate(ticker))
     rng = random.Random(seed)
@@ -524,7 +678,7 @@ def get_history(ticker, points=180):
         try:
             return fetch_stooq_history(ticker)
         except Exception:
-            return fallback_history(ticker, 250)
+            return fallback_history(ticker, MAX_CHART_HISTORY_DAYS + 40)
 
     full_history = cached(f"history:{ticker}", 15 * 60, load_history)
     if points <= 0:
@@ -572,15 +726,69 @@ def normalize_news_date(raw_date):
     return raw_date[:22]
 
 
+def build_news_search_terms(ticker):
+    ticker = sanitize_ticker(ticker)
+    company_name = TICKER_COMPANY_NAMES.get(ticker, ticker)
+    return {
+        "rss": f"{company_name} {ticker} stock earnings guidance analyst forecast",
+        "newsapi": f"\"{ticker}\" OR \"{company_name}\" stock earnings guidance analyst forecast",
+        "companyName": company_name,
+    }
+
+
+def news_relevance_score(item, ticker):
+    ticker = sanitize_ticker(ticker)
+    company_name = TICKER_COMPANY_NAMES.get(ticker, ticker).lower()
+    title = (item.get("title") or "").lower()
+    description = (item.get("description") or "").lower()
+    source_name = (item.get("source") or "").lower()
+    text = f"{title} {description} {source_name}"
+
+    score = 0.0
+    if ticker.lower() in text:
+        score += 2.5
+    if company_name and company_name in text:
+        score += 2.2
+    if title.startswith(ticker.lower()) or (company_name and title.startswith(company_name)):
+        score += 0.35
+    if any(term in text for term in ("stock", "shares", "equity", "trading")):
+        score += 0.35
+    if any(term in text for term in ("earnings", "forecast", "guidance", "price target", "analyst", "outlook")):
+        score += 0.5
+    if any(term in text for term in ("nasdaq", "nyse", "market", "wall street")):
+        score += 0.2
+    return round(score, 4)
+
+
+def rank_news_items(ticker, items, limit=8):
+    ranked_items = []
+    for item in items:
+        enriched = dict(item)
+        enriched["relevanceScore"] = news_relevance_score(enriched, ticker)
+        ranked_items.append(enriched)
+
+    ranked_items.sort(
+        key=lambda row: (safe_float(row.get("relevanceScore"), 0.0), row.get("published", "")),
+        reverse=True,
+    )
+
+    filtered = [row for row in ranked_items if safe_float(row.get("relevanceScore"), 0.0) >= 0.45]
+    if not filtered:
+        filtered = ranked_items
+
+    return filtered[: max(1, min(limit, 12))]
+
+
 def fallback_news(ticker):
     ticker = sanitize_ticker(ticker)
+    company_name = TICKER_COMPANY_NAMES.get(ticker, ticker)
     samples = [
-        f"{ticker} gains as analysts cite stronger demand outlook",
-        f"{ticker} investors watch margin trends ahead of next earnings cycle",
+        f"{company_name} ({ticker}) gains as analysts cite stronger demand outlook",
+        f"{company_name} investors watch margin trends ahead of next earnings cycle",
         f"Options activity around {ticker} suggests higher near-term volatility",
-        f"{ticker} sentiment mixed as macro data drives broader market swings",
+        f"{company_name} sentiment mixed as macro data drives broader market swings",
         f"Traders debate whether {ticker} can hold momentum above key resistance",
-        f"Institutional flows into {ticker} remain resilient despite risk-off sessions",
+        f"Institutional flows into {company_name} remain resilient despite risk-off sessions",
     ]
 
     items = []
@@ -598,11 +806,12 @@ def fallback_news(ticker):
                 "sentimentScore": round(score, 4),
             }
         )
-    return items
+    return rank_news_items(ticker, items, limit=len(items))
 
 
 def fetch_google_rss_news(ticker, limit=8):
-    query = quote(f"{ticker} stock earnings forecast")
+    search_terms = build_news_search_terms(ticker)
+    query = quote(search_terms["rss"])
     url = f"https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en"
     raw = fetch_url(url)
     root = ET.fromstring(raw)
@@ -635,14 +844,14 @@ def fetch_google_rss_news(ticker, limit=8):
     if not items:
         raise ValueError(f"No news items found for {ticker}")
 
-    return items
+    return rank_news_items(ticker, items, limit=limit)
 
 
 def fetch_newsapi_news(ticker, limit=8):
     if not NEWS_API_KEY:
         raise ValueError("NEWSAPI_KEY is not set")
 
-    query = quote(f"{ticker} stock OR {ticker} earnings OR {ticker} forecast")
+    query = quote(build_news_search_terms(ticker)["newsapi"])
     url = (
         "https://newsapi.org/v2/everything?"
         f"q={query}&language=en&sortBy=publishedAt&pageSize={max(1, min(limit, 20))}"
@@ -681,7 +890,7 @@ def fetch_newsapi_news(ticker, limit=8):
 
     if not items:
         raise ValueError(f"No NewsAPI articles found for {ticker}")
-    return items
+    return rank_news_items(ticker, items, limit=limit)
 
 
 def get_news(ticker, limit=8):
@@ -709,7 +918,316 @@ def get_news(ticker, limit=8):
         return fallback_news(ticker)
 
     items = cached(f"news:{ticker}", 20 * 60, load_news)
-    return items[:limit]
+    return rank_news_items(ticker, items, limit=limit)
+
+
+def compact_words(text, limit=24):
+    words = str(text or "").split()
+    if len(words) <= limit:
+        return " ".join(words)
+    return " ".join(words[:limit]).strip() + "..."
+
+
+def build_provider_analysis_prompt(prompt_text, ticker, prediction, news_items):
+    ticker = sanitize_ticker(ticker)
+    top_features = prediction.get("topFeatures") or []
+    top_features_text = ", ".join(
+        f"{row.get('feature', 'Signal')} ({safe_float(row.get('coefficient'), 0.0):.4f})"
+        for row in top_features[:4]
+    )
+    if not top_features_text:
+        top_features_text = "Momentum20, RSI, Volatility_30d, Sentiment"
+
+    headlines = []
+    for item in (news_items or [])[:5]:
+        headlines.append(
+            f"- {compact_words(item.get('title', ''), 18)} | sentiment={item.get('sentiment', 'Neutral')}"
+        )
+
+    chart_meta = prediction.get("chart") or {}
+    learning_7d = ((prediction.get("learning") or {}).get("horizons") or {}).get("7d") or {}
+    summary_lines = [
+        "You are validating a stock forecast using ONLY the data provided below.",
+        "Return JSON only.",
+        "",
+        f"User request: {prompt_text or f'Analyze {ticker}'}",
+        f"Ticker: {ticker}",
+        f"Current price: {prediction.get('currentPrice')}",
+        f"7-day expected return (%): {prediction.get('expectedReturn7dPct')}",
+        f"30-day expected return (%): {prediction.get('expectedReturn30dPct')}",
+        f"7-day target price: {prediction.get('predictedPrice7d')}",
+        f"30-day target price: {prediction.get('predictedPrice30d')}",
+        f"Confidence (%): {prediction.get('confidencePct')}",
+        f"Risk level: {prediction.get('riskLevel')}",
+        f"Sentiment: {prediction.get('sentiment')} ({prediction.get('sentimentScore')})",
+        f"Geo sentiment: {(prediction.get('geoSentiment') or {}).get('sentiment')} ({(prediction.get('geoSentiment') or {}).get('score')})",
+        f"RSI: {(prediction.get('indicators') or {}).get('rsi')}",
+        f"Volatility (%): {(prediction.get('indicators') or {}).get('volatilityPct')}",
+        f"Momentum 20D (%): {(prediction.get('indicators') or {}).get('momentum20Pct')}",
+        f"Prediction engine: {(prediction.get('model') or {}).get('name')}",
+        f"History days available: {chart_meta.get('historyDaysAvailable', 0)}",
+        f"Self-learning sample count (7d): {learning_7d.get('sampleCount', 0)}",
+        f"Top forecast drivers: {top_features_text}",
+        "Headlines:",
+        "\n".join(headlines) if headlines else "- No recent headlines available",
+        "",
+        "Return this exact JSON shape:",
+        '{',
+        '  "trend": "UP or DOWN or MIXED",',
+        '  "confidence_pct": 0,',
+        '  "expected_return_7d_pct": 0.0,',
+        '  "expected_return_30d_pct": 0.0,',
+        '  "summary": "one short sentence",',
+        '  "reasons": ["short reason 1", "short reason 2", "short reason 3"]',
+        '}',
+        "Do not use markdown fences.",
+    ]
+    return "\n".join(summary_lines)
+
+
+def extract_json_object_from_text(text):
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return None
+
+    start_index = raw_text.find("{")
+    if start_index < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escape_next = False
+    for index in range(start_index, len(raw_text)):
+        ch = raw_text[index]
+        if escape_next:
+            escape_next = False
+            continue
+        if ch == "\\":
+            escape_next = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                candidate = raw_text[start_index : index + 1]
+                try:
+                    return json.loads(candidate)
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def clamp_confidence_pct(value, fallback):
+    return int(round(clamp(safe_float(value, fallback), 0.0, 100.0)))
+
+
+def normalize_provider_analysis(payload_text, fallback_prediction):
+    parsed = extract_json_object_from_text(payload_text)
+    if not isinstance(parsed, dict):
+        return None
+
+    trend = str(parsed.get("trend", "MIXED")).strip().upper()
+    if trend not in ("UP", "DOWN", "MIXED"):
+        trend = "MIXED"
+
+    reasons = parsed.get("reasons") or []
+    if not isinstance(reasons, list):
+        reasons = []
+
+    return {
+        "trend": trend,
+        "confidencePct": clamp_confidence_pct(parsed.get("confidence_pct"), fallback_prediction.get("confidencePct", 60)),
+        "expectedReturn7dPct": round(safe_float(parsed.get("expected_return_7d_pct"), fallback_prediction.get("expectedReturn7dPct", 0.0)), 3),
+        "expectedReturn30dPct": round(safe_float(parsed.get("expected_return_30d_pct"), fallback_prediction.get("expectedReturn30dPct", 0.0)), 3),
+        "summary": compact_words(parsed.get("summary", ""), 22),
+        "reasons": [compact_words(item, 16) for item in reasons[:3] if str(item or "").strip()],
+        "rawText": compact_words(payload_text, 80),
+    }
+
+
+def extract_text_from_openai_responses(payload):
+    if isinstance(payload.get("output_text"), str) and payload.get("output_text", "").strip():
+        return payload["output_text"]
+
+    parts = []
+    for item in payload.get("output", []):
+        for content in item.get("content", []):
+            text_value = content.get("text")
+            if isinstance(text_value, str) and text_value.strip():
+                parts.append(text_value)
+    return "\n".join(parts).strip()
+
+
+def extract_text_from_openai_chat(payload):
+    choices = payload.get("choices") or []
+    if not choices:
+        return ""
+    message = (choices[0] or {}).get("message") or {}
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text_value = item.get("text") or item.get("content")
+                if isinstance(text_value, str) and text_value.strip():
+                    parts.append(text_value)
+        return "\n".join(parts).strip()
+    return ""
+
+
+def extract_text_from_gemini(payload):
+    candidates = payload.get("candidates") or []
+    if not candidates:
+        return ""
+    content = (candidates[0] or {}).get("content") or {}
+    parts = content.get("parts") or []
+    return "\n".join(part.get("text", "") for part in parts if part.get("text")).strip()
+
+
+def extract_text_from_anthropic(payload):
+    content = payload.get("content") or []
+    return "\n".join(item.get("text", "") for item in content if item.get("type") == "text" and item.get("text")).strip()
+
+
+def call_assistant_provider_api(assistant_model, prompt_text, ticker, prediction, news_items):
+    config = ASSISTANT_PROVIDER_CONFIG.get(assistant_model["id"])
+    if not config:
+        return {"enabled": False, "used": False, "status": "unsupported", "summary": ""}
+
+    api_key = os.environ.get(config["apiKeyEnv"], "").strip()
+    provider_model = os.environ.get(config["modelEnv"], "").strip() or config["defaultModel"]
+    if not api_key:
+        return {
+            "enabled": False,
+            "used": False,
+            "status": "unconfigured",
+            "summary": "",
+            "providerModel": provider_model,
+            "error": f"{config['apiKeyEnv']} is not set",
+        }
+
+    provider_prompt = build_provider_analysis_prompt(prompt_text, ticker, prediction, news_items)
+    transport = config["transport"]
+    endpoint = config["endpoint"].format(model=quote(provider_model, safe=""))
+
+    if transport == "openai_responses":
+        payload = {
+            "model": provider_model,
+            "instructions": "Analyze the stock using only the provided dashboard context and output strict JSON only.",
+            "input": provider_prompt,
+        }
+        response_payload = fetch_json_post(
+            endpoint,
+            payload,
+            timeout=45,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        raw_text = extract_text_from_openai_responses(response_payload)
+    elif transport == "gemini_generate_content":
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": provider_prompt}]}],
+            "generationConfig": {
+                "temperature": 0.2,
+                "responseMimeType": "application/json",
+            },
+        }
+        response_payload = fetch_json_post(
+            endpoint,
+            payload,
+            timeout=45,
+            headers={"x-goog-api-key": api_key},
+        )
+        raw_text = extract_text_from_gemini(response_payload)
+    elif transport == "anthropic_messages":
+        payload = {
+            "model": provider_model,
+            "max_tokens": 600,
+            "messages": [{"role": "user", "content": provider_prompt}],
+        }
+        response_payload = fetch_json_post(
+            endpoint,
+            payload,
+            timeout=45,
+            headers={
+                "x-api-key": api_key,
+                "anthropic-version": "2023-06-01",
+            },
+        )
+        raw_text = extract_text_from_anthropic(response_payload)
+    elif transport == "openai_chat_compatible":
+        payload = {
+            "model": provider_model,
+            "messages": [
+                {"role": "system", "content": "Analyze the stock using only the provided context and return JSON only."},
+                {"role": "user", "content": provider_prompt},
+            ],
+            "temperature": 0.2,
+        }
+        response_payload = fetch_json_post(
+            endpoint,
+            payload,
+            timeout=45,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        raw_text = extract_text_from_openai_chat(response_payload)
+    elif transport == "perplexity_sonar":
+        payload = {
+            "model": provider_model,
+            "messages": [
+                {"role": "system", "content": "Analyze the stock using only the provided context and return JSON only."},
+                {"role": "user", "content": provider_prompt},
+            ],
+            "temperature": 0.1,
+        }
+        response_payload = fetch_json_post(
+            endpoint,
+            payload,
+            timeout=45,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        raw_text = extract_text_from_openai_chat(response_payload)
+    else:
+        return {"enabled": False, "used": False, "status": "unsupported", "summary": ""}
+
+    normalized = normalize_provider_analysis(raw_text, prediction)
+    if not normalized:
+        return {
+            "enabled": True,
+            "used": False,
+            "status": "parse_error",
+            "summary": "",
+            "providerModel": provider_model,
+            "error": "Provider response was not valid JSON",
+            "rawText": compact_words(raw_text, 60),
+        }
+
+    return {
+        "enabled": True,
+        "used": True,
+        "status": "ok",
+        "providerModel": provider_model,
+        "summary": normalized.get("summary", ""),
+        "analysis": normalized,
+    }
+
+
+def get_assistant_provider_analysis(assistant_model, prompt_text, ticker, prediction, news_items):
+    ticker = sanitize_ticker(ticker)
+    prompt_hash = hashlib.sha1(f"{assistant_model['id']}|{ticker}|{prompt_text}".encode("utf-8")).hexdigest()[:16]
+    cache_key = f"assistant-provider:{assistant_model['id']}:{ticker}:{prompt_hash}"
+    return cached(
+        cache_key,
+        10 * 60,
+        lambda: call_assistant_provider_api(assistant_model, prompt_text, ticker, prediction, news_items),
+    )
 
 
 def infer_regions_from_text(text):
@@ -1225,6 +1743,142 @@ def build_lr_feature_rows(history, include_target=True, horizon=LR_FORECAST_DAYS
     return rows
 
 
+def feature_vector_stats(rows):
+    if not rows:
+        return [], []
+
+    feature_count = len(rows[0]["x"])
+    means = []
+    stds = []
+    for feature_index in range(feature_count):
+        values = [safe_float(row["x"][feature_index]) for row in rows]
+        mean_value = safe_mean(values, 0.0)
+        std_value = statistics.pstdev(values) if len(values) > 1 else 0.0
+        means.append(mean_value)
+        stds.append(std_value if std_value > 1e-9 else 1.0)
+    return means, stds
+
+
+def normalize_feature_vector(vector, means, stds):
+    normalized = []
+    for value, mean_value, std_value in zip(vector, means, stds):
+        normalized.append((safe_float(value) - mean_value) / std_value)
+    return normalized
+
+
+def vector_distance(left, right):
+    if not left or not right:
+        return 0.0
+    squared = [(left[idx] - right[idx]) ** 2 for idx in range(min(len(left), len(right)))]
+    return math.sqrt(sum(squared) / max(len(squared), 1))
+
+
+def build_self_learning_signal(history, horizon_days=LR_FORECAST_DAYS):
+    labeled_rows = build_lr_feature_rows(history, include_target=True, horizon=horizon_days)
+    current_rows = build_lr_feature_rows(history, include_target=False, horizon=horizon_days)
+
+    if len(labeled_rows) < SELF_LEARNING_MIN_ROWS or not current_rows:
+        return None
+
+    sample_rows = labeled_rows[-SELF_LEARNING_LOOKBACK_ROWS:]
+    current_row = current_rows[-1]
+    means, stds = feature_vector_stats(sample_rows)
+    current_vector = normalize_feature_vector(current_row["x"], means, stds)
+
+    scored_rows = []
+    for row in sample_rows:
+        row_vector = normalize_feature_vector(row["x"], means, stds)
+        distance = vector_distance(current_vector, row_vector)
+        realized_return = pct_change(row["target"], row["current_close"])
+        scored_rows.append(
+            {
+                "featureDate": row["feature_date"],
+                "targetDate": row["target_date"],
+                "distance": distance,
+                "realizedReturn": realized_return,
+            }
+        )
+
+    scored_rows.sort(key=lambda item: item["distance"])
+    analog_count = min(SELF_LEARNING_MAX_ANALOGS, max(6, len(scored_rows) // 8))
+    neighbors = scored_rows[:analog_count]
+    if not neighbors:
+        return None
+
+    total_weight = 0.0
+    weighted_return_sum = 0.0
+    for item in neighbors:
+        weight = 1.0 / (0.22 + item["distance"])
+        item["weight"] = weight
+        total_weight += weight
+        weighted_return_sum += weight * item["realizedReturn"]
+
+    if total_weight <= 0.0:
+        return None
+
+    analog_return = weighted_return_sum / total_weight
+    dispersion = sum(item["weight"] * abs(item["realizedReturn"] - analog_return) for item in neighbors) / total_weight
+    avg_distance = safe_mean([item["distance"] for item in neighbors], 0.0)
+
+    direction_weight = sum(
+        item["weight"]
+        for item in neighbors
+        if (item["realizedReturn"] >= 0 and analog_return >= 0)
+        or (item["realizedReturn"] < 0 and analog_return < 0)
+    )
+    consensus_pct = clamp((direction_weight / total_weight) * 100.0, 50.0, 100.0)
+    stability_score = clamp(1.0 - min(dispersion / 0.09, 1.0), 0.0, 1.0)
+    match_score = clamp(1.0 - min(avg_distance / 2.8, 1.0), 0.0, 1.0)
+    blend_weight = clamp(0.24 + (0.20 * match_score) + (0.12 * stability_score), 0.18, 0.52)
+
+    return {
+        "expectedReturn": round(analog_return, 6),
+        "sampleCount": len(neighbors),
+        "consensusPct": int(round(consensus_pct)),
+        "stabilityScore": round(stability_score, 4),
+        "matchScore": round(match_score, 4),
+        "dispersionPct": round(dispersion * 100.0, 3),
+        "blendWeight": round(blend_weight, 4),
+        "matches": [
+            {
+                "featureDate": item["featureDate"],
+                "targetDate": item["targetDate"],
+                "distance": round(item["distance"], 4),
+                "realizedReturnPct": round(item["realizedReturn"] * 100.0, 3),
+            }
+            for item in neighbors[:3]
+        ],
+    }
+
+
+def blend_self_learning_return(base_return, learning_signal, lower_bound, upper_bound):
+    if not learning_signal:
+        return clamp(base_return, lower_bound, upper_bound)
+
+    blended = (
+        ((1.0 - safe_float(learning_signal.get("blendWeight"), 0.0)) * base_return)
+        + (safe_float(learning_signal.get("blendWeight"), 0.0) * safe_float(learning_signal.get("expectedReturn"), 0.0))
+    )
+    return clamp(blended, lower_bound, upper_bound)
+
+
+def learning_confidence_adjustment(base_return, learning_signal):
+    if not learning_signal:
+        return 0
+
+    adjustment = (
+        (safe_float(learning_signal.get("matchScore"), 0.0) * 6.0)
+        + (safe_float(learning_signal.get("stabilityScore"), 0.0) * 4.0)
+        + ((safe_float(learning_signal.get("consensusPct"), 60.0) - 65.0) / 9.0)
+    )
+
+    learning_return = safe_float(learning_signal.get("expectedReturn"), 0.0)
+    if base_return and learning_return and (base_return * learning_return) < 0:
+        adjustment -= 6.0
+
+    return int(round(adjustment))
+
+
 def train_lr_prediction_bundle(history, horizon_days=LR_FORECAST_DAYS):
     if not SKLEARN_AVAILABLE:
         raise RuntimeError("scikit-learn is not installed")
@@ -1378,29 +2032,23 @@ def summarize_insights(prediction, closes, volumes):
     volatility = prediction["indicators"]["volatilityPct"]
 
     if expected >= 0:
-        trend_title = "Strong Uptrend" if confidence >= 75 else "Constructive Momentum"
-        trend_body = (
-            f"Model projects {expected:.2f}% (7D) and {expected_30d:.2f}% (30D) "
-            f"with {confidence}% confidence. Trend and sentiment are aligned to the upside."
-        )
+        trend_title = "Trend"
+        trend_body = f"Bias stays positive: {expected:.2f}% (7D) and {expected_30d:.2f}% (30D) with {confidence}% confidence."
         trend_kind = "positive"
     else:
-        trend_title = "Downside Risk"
-        trend_body = (
-            f"Model projects {expected:.2f}% (7D) and {expected_30d:.2f}% (30D) "
-            f"with {confidence}% confidence. Momentum and volatility suggest caution in the current regime."
-        )
+        trend_title = "Trend"
+        trend_body = f"Bias leans defensive: {expected:.2f}% (7D) and {expected_30d:.2f}% (30D) with {confidence}% confidence."
         trend_kind = "warning"
 
     if rsi > 70:
-        rsi_title = "Technical Analysis"
-        rsi_body = f"RSI at {rsi:.1f} indicates overbought conditions; pullback risk is elevated."
+        rsi_title = "RSI"
+        rsi_body = f"RSI {rsi:.1f} is stretched, so pullback risk is elevated."
     elif rsi < 30:
-        rsi_title = "Technical Analysis"
-        rsi_body = f"RSI at {rsi:.1f} indicates oversold conditions; rebound potential is improving."
+        rsi_title = "RSI"
+        rsi_body = f"RSI {rsi:.1f} is washed out, which keeps rebound potential in play."
     else:
-        rsi_title = "Technical Analysis"
-        rsi_body = f"RSI at {rsi:.1f} is neutral, leaving room for continuation in either direction."
+        rsi_title = "RSI"
+        rsi_body = f"RSI {rsi:.1f} is balanced, so price can still extend either way."
 
     resistance = max(closes[-25:]) if len(closes) >= 25 else max(closes)
     support = min(closes[-25:]) if len(closes) >= 25 else min(closes)
@@ -1411,19 +2059,17 @@ def summarize_insights(prediction, closes, volumes):
 
     if expected >= 0:
         watch_body = (
-            f"Resistance near ${resistance:.2f}; a break is stronger if volume holds above "
-            f"its 20-day average ({volume_ratio:.2f}x today)."
+            f"Watch ${resistance:.2f} resistance. A break looks stronger if volume holds near {volume_ratio:.2f}x its 20-day pace."
         )
     else:
         watch_body = (
-            f"Support near ${support:.2f}; failure below this level may accelerate downside "
-            f"with volatility at {volatility:.2f}%."
+            f"Watch ${support:.2f} support. A break lower could accelerate downside with volatility at {volatility:.2f}%."
         )
 
     insights = [
         {"type": trend_kind, "title": trend_title, "body": trend_body},
         {"type": "info", "title": rsi_title, "body": rsi_body},
-        {"type": "warning", "title": "Watch Point", "body": watch_body},
+        {"type": "warning", "title": "Watch", "body": watch_body},
     ]
 
     diagnostics = prediction.get("diagnostics") or {}
@@ -1435,26 +2081,20 @@ def summarize_insights(prediction, closes, volumes):
         test_r2 = diagnostics.get("testR2", 0.0)
         test_error_pct = diagnostics.get("testErrorPct", 0.0)
         if test_mae <= baseline_mae:
-            model_title = "Model Validation"
-            model_body = (
-                f"Linear Regression test MAE ${test_mae:.2f} beat baseline ${baseline_mae:.2f}; "
-                f"test R² {test_r2:.3f}, average error {test_error_pct:.2f}%."
-            )
+            model_title = "Model"
+            model_body = f"LR beat baseline: MAE ${test_mae:.2f} vs ${baseline_mae:.2f}, R² {test_r2:.3f}, error {test_error_pct:.2f}%."
             insights.append({"type": "positive", "title": model_title, "body": model_body})
         else:
-            model_title = "Model Validation"
-            model_body = (
-                f"Linear Regression test MAE ${test_mae:.2f} trails baseline ${baseline_mae:.2f}; "
-                f"use prediction direction cautiously (test R² {test_r2:.3f})."
-            )
+            model_title = "Model"
+            model_body = f"LR trails baseline: MAE ${test_mae:.2f} vs ${baseline_mae:.2f}, so direction needs more caution."
             insights.append({"type": "warning", "title": model_title, "body": model_body})
 
     if model_meta.get("fallbackReason"):
         insights.append(
             {
                 "type": "warning",
-                "title": "Model Fallback",
-                "body": "Notebook model unavailable for this request, so heuristic forecasting is active.",
+                "title": "Fallback",
+                "body": "Notebook model was unavailable, so Trading Pro switched to heuristic forecasting.",
             }
         )
 
@@ -1466,8 +2106,22 @@ def summarize_insights(prediction, closes, volumes):
         insights.append(
             {
                 "type": "info",
-                "title": "Geographic Signal",
-                "body": f"Regional sentiment is strongest in {top_region} and currently {geo_direction} ({geo_score:.3f}).",
+                "title": "Geo",
+                "body": f"{top_region} is the strongest regional input and currently {geo_direction} ({geo_score:.3f}).",
+            }
+        )
+
+    learning = prediction.get("learning") or {}
+    learning_7d = (learning.get("horizons") or {}).get("7d") or {}
+    if learning.get("enabled") and learning_7d:
+        insights.append(
+            {
+                "type": "positive" if safe_float(learning_7d.get("matchScore"), 0.0) >= 0.5 else "info",
+                "title": "Learning",
+                "body": (
+                    f"{learning_7d.get('sampleCount', 0)} similar setups fed the 7-day view with "
+                    f"{learning_7d.get('consensusPct', 0)}% directional agreement."
+                ),
             }
         )
 
@@ -1518,6 +2172,7 @@ def build_prediction(ticker):
         "forecastHorizonDays": 7,
         "forecastHorizonsDays": [LR_FORECAST_DAYS, LR_LONG_FORECAST_DAYS],
         "fallbackReason": None,
+        "learningLayer": None,
     }
     top_features = []
     top_features_30d = []
@@ -1558,6 +2213,22 @@ def build_prediction(ticker):
     else:
         model_meta["fallbackReason"] = "scikit-learn is not installed"
 
+    model_return_7d = expected_return_7d
+    model_return_30d = expected_return_30d
+    learning_signal_7d = build_self_learning_signal(history, horizon_days=LR_FORECAST_DAYS)
+    learning_signal_30d = build_self_learning_signal(history, horizon_days=LR_LONG_FORECAST_DAYS)
+
+    if learning_signal_7d:
+        expected_return_7d = blend_self_learning_return(model_return_7d, learning_signal_7d, -0.18, 0.18)
+        predicted_price_7d = latest_price * (1.0 + expected_return_7d)
+
+    if learning_signal_30d:
+        expected_return_30d = blend_self_learning_return(model_return_30d, learning_signal_30d, -0.35, 0.35)
+        predicted_price_30d = latest_price * (1.0 + expected_return_30d)
+
+    if learning_signal_7d or learning_signal_30d:
+        model_meta["learningLayer"] = "AdaptiveAnalogMemory"
+
     if model_meta["name"] == "LinearRegression":
         confidence_pct = ml_confidence_from_diagnostics(diagnostics, volatility, sentiment_avg)
     else:
@@ -1573,6 +2244,16 @@ def build_prediction(ticker):
         )
         confidence_pct = int(round(clamp(confidence * 100.0, 45.0, 92.0)))
 
+    confidence_pct = int(
+        round(
+            clamp(
+                confidence_pct + learning_confidence_adjustment(model_return_7d, learning_signal_7d),
+                35.0,
+                95.0,
+            )
+        )
+    )
+
     if volatility < 0.012:
         risk_level = "Low"
     elif volatility < 0.022:
@@ -1582,9 +2263,17 @@ def build_prediction(ticker):
 
     ai_score = round(clamp((confidence_pct / 100.0) * 10.0, 1.0, 10.0), 1)
 
-    chart_history = history[-35:] if len(history) > 35 else history
-    actual_series = [
+    chart_history = history[-MAX_CHART_HISTORY_DAYS:] if len(history) > MAX_CHART_HISTORY_DAYS else history
+    default_chart_days = next(
+        (item["days"] for item in CHART_RANGE_OPTIONS if item["id"] == DEFAULT_CHART_RANGE),
+        126,
+    )
+    actual_history_series = [
         {"date": point["date"], "price": round(point["close"], 4)} for point in chart_history
+    ]
+    actual_series = [
+        {"date": point["date"], "price": round(point["close"], 4)}
+        for point in chart_history[-default_chart_days:]
     ]
 
     forecast_series_7d = []
@@ -1639,23 +2328,39 @@ def build_prediction(ticker):
         },
         "series": {
             "actual": actual_series,
+            "actualHistory": actual_history_series,
             "forecast": forecast_series_30d,
             "forecast7": forecast_series_7d,
             "forecast30": forecast_series_30d,
+        },
+        "chart": {
+            "defaultRange": DEFAULT_CHART_RANGE,
+            "ranges": CHART_RANGE_OPTIONS,
+            "historyDaysAvailable": len(actual_history_series),
+            "forecastDays": LR_LONG_FORECAST_DAYS,
         },
         "model": model_meta,
         "diagnostics": diagnostics,
         "diagnostics30d": diagnostics_30d,
         "topFeatures": top_features,
         "topFeatures30d": top_features_30d,
+        "learning": {
+            "enabled": bool(learning_signal_7d or learning_signal_30d),
+            "mode": "adaptive_memory",
+            "label": "Adaptive analog memory",
+            "horizons": {
+                "7d": learning_signal_7d,
+                "30d": learning_signal_30d,
+            },
+        },
         "mapInsights": map_insights,
         "modelNotes": {
             "type": model_meta["type"],
             "description": (
                 "Linear Regression model from Prediction-experiments feature pipeline "
-                "with 15 engineered features and 7/30-day horizons."
+                "with 15 engineered features, adaptive analog memory, and 7/30-day horizons."
                 if model_meta["name"] == "LinearRegression"
-                else "Technical momentum and headline sentiment blended into 7-day and 30-day directional scores."
+                else "Technical momentum, adaptive analog memory, and headline sentiment blended into 7-day and 30-day directional scores."
             ),
             "disclaimer": "Educational prototype only. Not financial advice.",
         },
@@ -1664,9 +2369,102 @@ def build_prediction(ticker):
     return prediction
 
 
+def rebuild_prediction_forecast_series(prediction):
+    chart_history = (prediction.get("series") or {}).get("actualHistory") or (prediction.get("series") or {}).get("actual") or []
+    if not chart_history:
+        return prediction
+
+    latest_price = safe_float(prediction.get("currentPrice"), 0.0)
+    predicted_price_7d = safe_float(prediction.get("predictedPrice7d"), latest_price)
+    predicted_price_30d = safe_float(prediction.get("predictedPrice30d"), predicted_price_7d)
+    expected_return_7d = safe_float(prediction.get("expectedReturn7dPct"), 0.0) / 100.0
+    expected_return_30d = safe_float(prediction.get("expectedReturn30dPct"), 0.0) / 100.0
+    final_date = datetime.strptime(chart_history[-1]["date"], "%Y-%m-%d").date()
+
+    forecast_series_7d = []
+    forecast_series_30d = []
+    curvature_7d = 1.08 if expected_return_7d >= 0 else 0.92
+    curvature_30d = 1.04 if expected_return_30d >= 0 else 0.96
+
+    for day_index in range(1, LR_LONG_FORECAST_DAYS + 1):
+        final_date = next_business_day(final_date)
+        if day_index <= LR_FORECAST_DAYS:
+            progress = (day_index / float(LR_FORECAST_DAYS)) ** curvature_7d
+            projected = latest_price + (predicted_price_7d - latest_price) * progress
+        else:
+            progress = ((day_index - LR_FORECAST_DAYS) / float(LR_LONG_FORECAST_DAYS - LR_FORECAST_DAYS)) ** curvature_30d
+            projected = predicted_price_7d + (predicted_price_30d - predicted_price_7d) * progress
+
+        point = {"date": final_date.isoformat(), "price": round(projected, 4)}
+        forecast_series_30d.append(point)
+        if day_index <= LR_FORECAST_DAYS:
+            forecast_series_7d.append(point)
+
+    prediction["series"]["forecast7"] = forecast_series_7d
+    prediction["series"]["forecast30"] = forecast_series_30d
+    prediction["series"]["forecast"] = forecast_series_30d
+
+    default_range_id = (prediction.get("chart") or {}).get("defaultRange", DEFAULT_CHART_RANGE)
+    default_days = next((item["days"] for item in CHART_RANGE_OPTIONS if item["id"] == default_range_id), 126)
+    prediction["series"]["actual"] = chart_history[-default_days:]
+    return prediction
+
+
+def apply_provider_analysis_to_prediction(prediction, assistant_model, provider_result):
+    provider_meta = {
+        "label": assistant_model["label"],
+        "providerModel": assistant_model.get("providerModel", ""),
+        "configured": bool(provider_result.get("enabled")),
+        "used": bool(provider_result.get("used")),
+        "status": provider_result.get("status", "unconfigured"),
+        "summary": provider_result.get("summary", ""),
+        "error": provider_result.get("error", ""),
+        "reasons": [],
+    }
+
+    analysis = provider_result.get("analysis") or {}
+    if not provider_result.get("used") or not analysis:
+        prediction["assistantProvider"] = provider_meta
+        return prediction
+
+    base_return_7d = safe_float(prediction.get("expectedReturn7dPct"), 0.0) / 100.0
+    base_return_30d = safe_float(prediction.get("expectedReturn30dPct"), 0.0) / 100.0
+    llm_return_7d = safe_float(analysis.get("expectedReturn7dPct"), prediction.get("expectedReturn7dPct", 0.0)) / 100.0
+    llm_return_30d = safe_float(analysis.get("expectedReturn30dPct"), prediction.get("expectedReturn30dPct", 0.0)) / 100.0
+    llm_confidence = safe_float(analysis.get("confidencePct"), prediction.get("confidencePct", 60.0))
+
+    weight_7d = clamp((llm_confidence / 100.0) * 0.24, 0.08, 0.26)
+    weight_30d = clamp((llm_confidence / 100.0) * 0.28, 0.10, 0.3)
+
+    blended_return_7d = clamp(((1.0 - weight_7d) * base_return_7d) + (weight_7d * llm_return_7d), -0.22, 0.22)
+    blended_return_30d = clamp(((1.0 - weight_30d) * base_return_30d) + (weight_30d * llm_return_30d), -0.4, 0.4)
+    current_price = safe_float(prediction.get("currentPrice"), 0.0)
+
+    prediction["expectedReturn7dPct"] = round(blended_return_7d * 100.0, 3)
+    prediction["expectedReturn30dPct"] = round(blended_return_30d * 100.0, 3)
+    prediction["predictedPrice7d"] = round(current_price * (1.0 + blended_return_7d), 4)
+    prediction["predictedPrice30d"] = round(current_price * (1.0 + blended_return_30d), 4)
+    prediction["confidencePct"] = int(round(clamp((safe_float(prediction.get("confidencePct"), 60.0) * 0.7) + (llm_confidence * 0.3), 35.0, 96.0)))
+    prediction["aiScore"] = round(clamp((prediction["confidencePct"] / 100.0) * 10.0, 1.0, 10.0), 1)
+    prediction["assistantProvider"] = {
+        **provider_meta,
+        "reasons": analysis.get("reasons", []),
+        "summary": analysis.get("summary", provider_meta["summary"]),
+        "trend": analysis.get("trend", "MIXED"),
+    }
+
+    prediction["model"]["assistantLayer"] = assistant_model["label"]
+    prediction["model"]["assistantProviderModel"] = provider_meta["providerModel"]
+    prediction["modelNotes"]["assistantLayer"] = (
+        f"{assistant_model['label']} API calibration via {provider_meta['providerModel']}"
+    )
+
+    return rebuild_prediction_forecast_series(prediction)
+
+
 def build_stock_payload(ticker, days=120):
     ticker = sanitize_ticker(ticker)
-    days = int(clamp(days, 20, 300))
+    days = int(clamp(days, 20, MAX_CHART_HISTORY_DAYS + 16))
     history = get_history(ticker, points=days)
 
     closes = [point["close"] for point in history]
@@ -1716,16 +2514,30 @@ def build_assistant_query_response(prompt_text, selected_model):
     ticker = infer_ticker_from_prompt(prompt_text)
     prediction = build_prediction(ticker)
     news_items = get_news(ticker, limit=8)
+    provider_result = get_assistant_provider_analysis(assistant_model, prompt_text, ticker, prediction, news_items)
+    prediction = apply_provider_analysis_to_prediction(prediction, assistant_model, provider_result)
+
+    if provider_result.get("used"):
+        assistant_message = (
+            f"{assistant_model['label']} API connected via {provider_result.get('providerModel', assistant_model.get('providerModel', 'default model'))}. "
+            f"Trading Pro blended the provider's structured analysis with local market, news, and self-learning signals for {ticker}."
+        )
+    elif assistant_model.get("apiConfigured"):
+        assistant_message = (
+            f"{assistant_model['label']} API is configured, but this request fell back to the local Trading Pro forecast engine."
+        )
+    else:
+        assistant_message = (
+            f"{assistant_model['label']} API is not configured on this server yet. "
+            f"Trading Pro used its local forecast engine for {ticker}."
+        )
 
     return {
         "prompt": (prompt_text or "").strip(),
         "ticker": ticker,
         "assistantModel": assistant_model,
-        "assistantMessage": (
-            f"{assistant_model['label']} mode selected. "
-            f"Trading Pro mapped your request to {ticker} and prepared the chart, "
-            f"market context, and 7-day / 30-day forecasts."
-        ),
+        "assistantMessage": assistant_message,
+        "assistantProvider": prediction.get("assistantProvider", {}),
         "prediction": prediction,
         "news": {"ticker": ticker, "items": news_items},
     }
@@ -1817,7 +2629,8 @@ def main():
     host = os.environ.get("HOST", "0.0.0.0")
 
     server = ThreadingHTTPServer((host, port), AppHandler)
-    print(f"TradePro AI running on http://{host}:{port}")
+    display_host = "127.0.0.1" if host == "0.0.0.0" else host
+    print(f"TradePro AI running on http://{display_host}:{port}")
     print("Press Ctrl+C to stop.")
 
     try:

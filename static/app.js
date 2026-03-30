@@ -2,12 +2,66 @@ const WATCHLIST = ["TSLA", "NVDA", "AMZN", "AAPL", "MSFT", "GOOGL"];
 const ASSISTANT_MODELS = [
   { id: "openai", label: "OpenAI" },
   { id: "gemini", label: "Gemini" },
-  { id: "deepseek", label: "DeepSeek" },
   { id: "claude", label: "Claude" },
   { id: "grok", label: "Grok" },
   { id: "perplexity", label: "Perplexity" },
 ];
+const WATCHLIST_META = {
+  TSLA: { name: "Tesla Inc.", badge: "TS", accent: "#ff6b61" },
+  NVDA: { name: "NVIDIA Corp.", badge: "NV", accent: "#58d17a" },
+  AMZN: { name: "Amazon.com Inc.", badge: "AM", accent: "#ffb24d" },
+  AAPL: { name: "Apple Inc.", badge: "AP", accent: "#8ea6c9" },
+  MSFT: { name: "Microsoft Corp.", badge: "MS", accent: "#61a9ff" },
+  GOOGL: { name: "Alphabet Inc.", badge: "GO", accent: "#6b8dff" },
+};
 const THEME_STORAGE_KEY = "trading-pro-theme";
+const HISTORY_RANGE_DAYS = {
+  "3m": 63,
+  "6m": 126,
+  "1y": 252,
+  "2y": 504,
+};
+const DEFAULT_HISTORY_RANGE = "6m";
+const FEATURE_LABELS = {
+  Close_lag1: "Prev Close",
+  Close_lag5: "5D Anchor",
+  Close_lag10: "10D Anchor",
+  Return_1d: "1D Return",
+  Return_5d: "5D Return",
+  Return_20d: "20D Return",
+  MA_10: "10D Average",
+  MA_50: "50D Average",
+  MA_200: "200D Average",
+  Volatility_10d: "10D Volatility",
+  Volatility_30d: "30D Volatility",
+  RSI: "RSI",
+  Month: "Month",
+  Quarter: "Quarter",
+  DayOfWeek: "Day of Week",
+  Momentum20: "20D Momentum",
+  GeoSignal: "Geo Signal",
+  Sentiment: "News Sentiment",
+};
+const DRIVER_EXPLANATIONS = {
+  "Prev Close": "This shows how the last closing price affects the forecast.",
+  "5D Anchor": "This shows where the stock was trading about 5 days ago.",
+  "10D Anchor": "This shows where the stock was trading about 10 days ago.",
+  "1D Return": "This shows how the stock moved over the last day.",
+  "5D Return": "This shows how the stock moved over the last 5 days.",
+  "20D Return": "This shows how the stock moved over the last 20 days.",
+  "10D Average": "This shows the average price over the last 10 days.",
+  "50D Average": "This shows the average price over the last 50 days.",
+  "200D Average": "This shows the long-term average price over the last 200 days.",
+  "10D Volatility": "This shows how jumpy the stock has been recently.",
+  "30D Volatility": "This shows how jumpy the stock has been over the last month.",
+  RSI: "This shows if the stock may be overbought or oversold.",
+  Month: "This shows how this time of year has behaved in the past.",
+  Quarter: "This shows how this part of the year has behaved in the past.",
+  "Day of Week": "This shows if this day of the week matters in the data.",
+  "20D Momentum": "This shows whether the recent trend has been moving up or down.",
+  "Geo Signal": "This shows whether global market exposure is helping or hurting the stock.",
+  "News Sentiment": "This shows whether recent news is helping or hurting the stock.",
+};
 
 let activeTicker = WATCHLIST[0];
 let activeAssistantModel = ASSISTANT_MODELS[0].id;
@@ -25,12 +79,17 @@ let attachedFiles = [];
 let dashboardPrimed = false;
 let latestNewsItems = [];
 let newsExpanded = false;
+let latestPrediction = null;
+let activeHistoryRange = DEFAULT_HISTORY_RANGE;
 
 const elements = {
+  workspace: document.querySelector(".workspace"),
   heroPanel: document.getElementById("heroPanel"),
+  heroCopy: document.querySelector(".hero-copy"),
   composerDock: document.getElementById("composerDock"),
   resultsShell: document.getElementById("resultsShell"),
   modelPillRow: document.getElementById("modelPillRow"),
+  landingStockRail: document.getElementById("landingStockRail"),
   assistantForm: document.getElementById("assistantForm"),
   assistantModelSelect: document.getElementById("assistantModelSelect"),
   themeToggle: document.getElementById("themeToggle"),
@@ -43,18 +102,30 @@ const elements = {
   refreshBtn: document.getElementById("refreshBtn"),
   asOfText: document.getElementById("asOfText"),
   marketCards: document.getElementById("marketCards"),
-  tickerSwitch: document.getElementById("tickerSwitch"),
-  watchlistItems: document.getElementById("watchlistItems"),
+  assistantSwitch: document.getElementById("assistantSwitch"),
   activeTickerLabel: document.getElementById("activeTickerLabel"),
   tickerTitle: document.getElementById("tickerTitle"),
   priceLine: document.getElementById("priceLine"),
+  predictionDirection: document.getElementById("predictionDirection"),
+  predictionDirectionCopy: document.getElementById("predictionDirectionCopy"),
   deltaPill: document.getElementById("deltaPill"),
   deltaPill30: document.getElementById("deltaPill30"),
+  historyRangeToggle: document.getElementById("historyRangeToggle"),
+  historyRangeLabel: document.getElementById("historyRangeLabel"),
+  tradeCallCard: document.getElementById("tradeCallCard"),
+  tradeCallAction: document.getElementById("tradeCallAction"),
+  tradeCallSummary: document.getElementById("tradeCallSummary"),
+  tradeCallMeta: document.getElementById("tradeCallMeta"),
+  analysisSummaryText: document.getElementById("analysisSummaryText"),
+  analysisSummaryReasons: document.getElementById("analysisSummaryReasons"),
   confidenceValue: document.getElementById("confidenceValue"),
+  confidenceMeter: document.getElementById("confidenceMeter"),
   targetValue: document.getElementById("targetValue"),
+  targetMeter: document.getElementById("targetMeter"),
   target30Value: document.getElementById("target30Value"),
+  target30Meter: document.getElementById("target30Meter"),
   riskValue: document.getElementById("riskValue"),
-  insightsList: document.getElementById("insightsList"),
+  riskMeter: document.getElementById("riskMeter"),
   aiScoreValue: document.getElementById("aiScoreValue"),
   sentimentValue: document.getElementById("sentimentValue"),
   rsiValue: document.getElementById("rsiValue"),
@@ -63,6 +134,7 @@ const elements = {
   momentumValue: document.getElementById("momentumValue"),
   modelValue: document.getElementById("modelValue"),
   testMaeValue: document.getElementById("testMaeValue"),
+  driverList: document.getElementById("driverList"),
   newsList: document.getElementById("newsList"),
   newsToggleBtn: document.getElementById("newsToggleBtn"),
   mapProviderText: document.getElementById("mapProviderText"),
@@ -93,6 +165,12 @@ function formatPercent(value) {
   return `${sign}${number.toFixed(2)}%`;
 }
 
+function formatSignedCurrency(value) {
+  const number = Number(value || 0);
+  const sign = number > 0 ? "+" : number < 0 ? "-" : "";
+  return `${sign}${formatCurrency(Math.abs(number))}`;
+}
+
 function formatSignedScore(value) {
   const number = Number(value || 0);
   const sign = number > 0 ? "+" : "";
@@ -112,6 +190,27 @@ function formatCompact(value) {
     notation: "compact",
     maximumFractionDigits: 2,
   }).format(Number(value || 0));
+}
+
+function setTextIfPresent(element, value) {
+  if (element) {
+    element.textContent = value;
+  }
+}
+
+function clampNumber(value, lower, upper) {
+  return Math.min(upper, Math.max(lower, Number(value || 0)));
+}
+
+function prettifyFeatureLabel(featureName) {
+  if (FEATURE_LABELS[featureName]) {
+    return FEATURE_LABELS[featureName];
+  }
+
+  return String(featureName || "")
+    .replace(/_/g, " ")
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 async function fetchJson(path) {
@@ -173,6 +272,23 @@ function autoResizePrompt() {
   }
   elements.promptInput.style.height = "auto";
   elements.promptInput.style.height = `${Math.min(elements.promptInput.scrollHeight, 180)}px`;
+}
+
+function syncLandingComposerPosition() {
+  if (!elements.workspace || !elements.heroCopy) {
+    return;
+  }
+
+  if (document.body.classList.contains("has-results")) {
+    elements.workspace.style.removeProperty("--landing-composer-top");
+    return;
+  }
+
+  const workspaceRect = elements.workspace.getBoundingClientRect();
+  const heroCopyRect = elements.heroCopy.getBoundingClientRect();
+  const composerTop = Math.max(0, heroCopyRect.bottom - workspaceRect.top + 20);
+
+  elements.workspace.style.setProperty("--landing-composer-top", `${Math.round(composerTop)}px`);
 }
 
 function getThemeTokens() {
@@ -281,21 +397,40 @@ function resetLandingState() {
   resetPromptField();
   document.body.classList.remove("has-results", "has-prompt-history", "composer-compact");
   elements.resultsShell.classList.add("hidden");
+  syncLandingComposerPosition();
 }
 
 function inferTickerFromPrompt(promptText) {
-  const words = String(promptText || "")
-    .toUpperCase()
-    .match(/[A-Z]{1,5}/g);
-
-  if (!words) {
+  const tokens = String(promptText || "").match(/[A-Za-z][A-Za-z0-9.^-]{0,11}/g);
+  if (!tokens) {
     return "";
   }
 
   const ignoreWords = new Set([
+    "A",
     "SHOW",
     "WITH",
+    "WHAT",
+    "WHATS",
+    "IS",
+    "ARE",
+    "DO",
+    "DOES",
+    "CAN",
+    "COULD",
+    "WOULD",
+    "SHOULD",
+    "HOW",
+    "WHY",
+    "WHEN",
+    "WHERE",
+    "TELL",
+    "ABOUT",
     "NEXT",
+    "ANOTHER",
+    "ANY",
+    "CHECK",
+    "CLAUDE",
     "DAYS",
     "DAY",
     "WEEK",
@@ -306,7 +441,6 @@ function inferTickerFromPrompt(promptText) {
     "YEARS",
     "OPENAI",
     "GEMINI",
-    "DEEPSEEK",
     "CLAUDE",
     "GROK",
     "PERPLEXITY",
@@ -327,10 +461,74 @@ function inferTickerFromPrompt(promptText) {
     "PREDICTION",
     "PREDICTIONS",
     "FORECAST",
+    "FIND",
+    "IF",
+    "LATEST",
+    "MIND",
+    "MY",
+    "ON",
     "PRICE",
+    "REVIEW",
+    "SEARCH",
+    "THIS",
+    "USE",
+    "USED",
+    "YOU",
   ]);
 
-  return words.find((word) => WATCHLIST.includes(word) || !ignoreWords.has(word)) || "";
+  for (const token of tokens) {
+    const upper = token.toUpperCase();
+    if (WATCHLIST.includes(upper)) {
+      return upper;
+    }
+  }
+
+  for (const token of tokens) {
+    const upper = token.toUpperCase();
+    if (ignoreWords.has(upper) || upper.length > 5 || upper === "AI") {
+      continue;
+    }
+
+    if (/^[A-Z0-9.^-]{1,5}$/.test(token) && /[A-Z]/.test(token)) {
+      return upper;
+    }
+  }
+
+  for (const token of tokens) {
+    const upper = token.toUpperCase();
+    if (ignoreWords.has(upper) || upper.length < 2 || upper.length > 5 || upper === "AI") {
+      continue;
+    }
+
+    if (/^[A-Z0-9.^-]{2,5}$/.test(upper)) {
+      return upper;
+    }
+  }
+
+  return "";
+}
+
+function inferAssistantModelFromPrompt(promptText) {
+  const text = String(promptText || "").toLowerCase();
+  if (!text) {
+    return "";
+  }
+
+  const modelMatchers = [
+    { id: "openai", patterns: ["openai", "open ai", "gpt", "chatgpt"] },
+    { id: "gemini", patterns: ["gemini", "google gemini"] },
+    { id: "claude", patterns: ["claude", "anthropic"] },
+    { id: "grok", patterns: ["grok", "xai", "x.ai"] },
+    { id: "perplexity", patterns: ["perplexity", "sonar"] },
+  ];
+
+  for (const model of modelMatchers) {
+    if (model.patterns.some((pattern) => text.includes(pattern))) {
+      return model.id;
+    }
+  }
+
+  return "";
 }
 
 function showAnalysisLoading() {
@@ -341,13 +539,8 @@ function showAnalysisLoading() {
 function hideAnalysisLoading() {}
 
 function scrollToAnalysis() {
-  if (!elements.resultsShell) {
-    return;
-  }
-
-  const targetTop = elements.resultsShell.getBoundingClientRect().top + window.scrollY - 132;
   window.scrollTo({
-    top: Math.max(targetTop, 0),
+    top: 0,
     behavior: "smooth",
   });
 }
@@ -419,6 +612,11 @@ function currentAssistantLabel() {
   return model ? model.label : "OpenAI";
 }
 
+function buildAnalysisPrompt(ticker) {
+  const cleanTicker = sanitizeTicker(ticker) || WATCHLIST[0];
+  return `Analyze ${cleanTicker} with ${currentAssistantLabel()} for 7-day and 30-day stock outlook`;
+}
+
 function setAssistantModel(modelId) {
   activeAssistantModel = modelId;
   if (elements.assistantModelSelect) {
@@ -428,6 +626,16 @@ function setAssistantModel(modelId) {
   pills.forEach((pill) => {
     pill.classList.toggle("active", pill.dataset.model === modelId);
   });
+  const switchButtons = elements.assistantSwitch?.querySelectorAll(".ticker-chip") || [];
+  switchButtons.forEach((button) => {
+    button.classList.toggle("active", button.dataset.model === modelId);
+  });
+  if (elements.asOfText && watchlistSnapshot.length) {
+    elements.asOfText.textContent = `Click any stock to run it with ${currentAssistantLabel()}`;
+  }
+  if (watchlistSnapshot.length) {
+    renderLandingCards(watchlistSnapshot);
+  }
 }
 
 function renderModelControls() {
@@ -452,62 +660,95 @@ function renderModelControls() {
   elements.assistantModelSelect.value = activeAssistantModel;
 }
 
-function renderTickerSwitch() {
-  elements.tickerSwitch.innerHTML = "";
-  WATCHLIST.forEach((ticker) => {
+function renderAssistantSwitch() {
+  if (!elements.assistantSwitch) {
+    return;
+  }
+
+  elements.assistantSwitch.innerHTML = "";
+  ASSISTANT_MODELS.forEach((model) => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `ticker-chip${ticker === activeTicker ? " active" : ""}`;
-    btn.textContent = ticker;
-    btn.addEventListener("click", () => loadTicker(ticker));
-    elements.tickerSwitch.appendChild(btn);
-  });
-}
-
-function renderMarketOverview(payload) {
-  elements.marketCards.innerHTML = "";
-  elements.asOfText.textContent = payload?.asOf
-    ? `As of ${payload.asOf}`
-    : "Live market snapshot";
-
-  (payload?.indices || []).forEach((item) => {
-    const card = document.createElement("article");
-    card.className = "market-card";
-    const directionClass = item.changePct > 0 ? "up" : item.changePct < 0 ? "down" : "neutral";
-
-    card.innerHTML = `
-      <p class="market-name">${item.name} (${item.ticker})</p>
-      <p class="market-price">${item.price.toLocaleString("en-US", { maximumFractionDigits: 2 })}</p>
-      <p class="market-change ${directionClass}">${formatPercent(item.changePct)} today</p>
-    `;
-
-    elements.marketCards.appendChild(card);
+    btn.className = `ticker-chip${model.id === activeAssistantModel ? " active" : ""}`;
+    btn.dataset.model = model.id;
+    btn.textContent = model.label;
+    btn.addEventListener("click", () => loadAssistantModel(model.id));
+    elements.assistantSwitch.appendChild(btn);
   });
 }
 
 function renderWatchlist(items) {
   watchlistSnapshot = items;
-  elements.watchlistItems.innerHTML = "";
+  elements.marketCards.innerHTML = "";
+  elements.asOfText.textContent = `Click any stock to run it with ${currentAssistantLabel()}`;
 
   items.forEach((stock) => {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = `watch-item${stock.ticker === activeTicker ? " active" : ""}`;
+    btn.className = `market-card market-watch-card${stock.ticker === activeTicker ? " active" : ""}`;
 
     const directionClass = stock.latest.changePct > 0 ? "up" : stock.latest.changePct < 0 ? "down" : "neutral";
 
     btn.innerHTML = `
-      <span class="symbol">${stock.ticker}</span>
-      <span class="price">${formatCurrency(stock.latest.price)}</span>
-      <span class="change ${directionClass}">${formatPercent(stock.latest.changePct)}</span>
+      <p class="market-name">${stock.ticker}</p>
+      <p class="market-price">${formatCurrency(stock.latest.price)}</p>
+      <p class="market-change ${directionClass}">${formatPercent(stock.latest.changePct)} today</p>
     `;
 
+    btn.setAttribute("aria-label", `Analyze ${stock.ticker} with ${currentAssistantLabel()}`);
     btn.addEventListener("click", () => loadTicker(stock.ticker));
-    elements.watchlistItems.appendChild(btn);
+    elements.marketCards.appendChild(btn);
+  });
+}
+
+function renderLandingCards(items) {
+  if (!elements.landingStockRail) {
+    return;
+  }
+
+  elements.landingStockRail.innerHTML = "";
+
+  (items || []).forEach((stock, index) => {
+    const meta = WATCHLIST_META[stock.ticker] || {
+      name: "Tracked Stock",
+      badge: stock.ticker.slice(0, 2),
+      accent: "#5e96ff",
+    };
+    const directionClass = stock.latest.changePct > 0 ? "up" : stock.latest.changePct < 0 ? "down" : "neutral";
+    const directionIcon = directionClass === "down" ? "↘" : directionClass === "up" ? "↗" : "→";
+    const button = document.createElement("button");
+
+    button.type = "button";
+    button.className = `landing-stock-card ${directionClass}`;
+    button.style.setProperty("--stock-accent", meta.accent);
+    button.setAttribute("aria-label", `Analyze ${stock.ticker} with ${currentAssistantLabel()}`);
+    button.innerHTML = `
+      <div class="landing-stock-card-head">
+        <div class="landing-stock-ident">
+          <span class="landing-stock-badge">${meta.badge}</span>
+          <div class="landing-stock-copy">
+            <p class="landing-stock-symbol">${stock.ticker}</p>
+            <p class="landing-stock-company">${meta.name}</p>
+          </div>
+        </div>
+        <span class="landing-stock-arrow ${directionClass}">${directionIcon}</span>
+      </div>
+      <div class="landing-stock-card-body">
+        <p class="landing-stock-price">${formatCurrency(stock.latest.price)}</p>
+        <p class="landing-stock-change ${directionClass}">${formatSignedCurrency(stock.latest.change)} · ${formatPercent(stock.latest.changePct)}</p>
+      </div>
+    `;
+
+    button.addEventListener("click", () => loadTicker(stock.ticker));
+    elements.landingStockRail.appendChild(button);
   });
 }
 
 function renderInsights(items) {
+  if (!elements.insightsList) {
+    return;
+  }
+
   elements.insightsList.innerHTML = "";
 
   (items || []).forEach((insight) => {
@@ -759,50 +1000,166 @@ function renderSession(response) {
   document.body.classList.add("has-results");
 }
 
-function renderPrediction(prediction, assistantLabel) {
+function summaryDriverLabels(prediction) {
+  return (Array.isArray(prediction.topFeatures) ? prediction.topFeatures : [])
+    .map((driver) => prettifyFeatureLabel(driver.feature))
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+function buildPredictionNarrative(prediction, assistantProvider) {
+  const providerSummary = String(assistantProvider?.summary || "").trim();
+  if (providerSummary) {
+    return providerSummary;
+  }
+
+  const expected30d = Number(prediction.expectedReturn30dPct || prediction.expectedReturn7dPct || 0);
+  const directionWord = expected30d >= 0 ? "rise" : "fall";
+  const driverLabels = summaryDriverLabels(prediction);
+  const driverText = driverLabels.length >= 2 ? `${driverLabels[0]} and ${driverLabels[1]}` : driverLabels[0] || "recent price patterns";
+  const sentimentText = (prediction.sentiment || "Neutral").toLowerCase();
+  const newsClause = sentimentText === "neutral" ? "news tone is mixed" : `news tone is ${sentimentText}`;
+  const topRegion = prediction.geoSentiment?.topRegion;
+  const geoClause = topRegion ? `, and ${topRegion} is the strongest region signal` : "";
+
+  return `${prediction.ticker} may ${directionWord} because ${driverText} are leading the forecast, while ${newsClause}${geoClause}.`;
+}
+
+function buildPredictionReasons(prediction, assistantProvider) {
+  const providerReasons = Array.isArray(assistantProvider?.reasons)
+    ? assistantProvider.reasons.filter((reason) => String(reason || "").trim())
+    : [];
+  if (providerReasons.length) {
+    return providerReasons.slice(0, 3);
+  }
+
+  const reasons = [];
+  const driverLabels = summaryDriverLabels(prediction);
+  if (driverLabels[0]) {
+    reasons.push(`${driverLabels[0]} is one of the strongest chart signals right now.`);
+  }
+
+  if (prediction.sentiment) {
+    reasons.push(`News tone is ${prediction.sentiment.toLowerCase()} for ${prediction.ticker}.`);
+  }
+
+  const rsi = Number(prediction.indicators?.rsi || 0);
+  if (rsi > 70) {
+    reasons.push("RSI is high, so pullback risk is still elevated.");
+  } else if (rsi < 30) {
+    reasons.push("RSI is low, so rebound potential is still in play.");
+  } else if (prediction.geoSentiment?.topRegion) {
+    reasons.push(`${prediction.geoSentiment.topRegion} is the strongest regional signal in the model.`);
+  }
+
+  return reasons.slice(0, 3);
+}
+
+function renderAnalysisSummary(prediction, assistantProvider) {
+  setTextIfPresent(elements.analysisSummaryText, buildPredictionNarrative(prediction, assistantProvider));
+
+  if (!elements.analysisSummaryReasons) {
+    return;
+  }
+
+  const reasons = buildPredictionReasons(prediction, assistantProvider);
+  elements.analysisSummaryReasons.innerHTML = "";
+
+  reasons.forEach((reason) => {
+    const item = document.createElement("li");
+    item.textContent = reason;
+    elements.analysisSummaryReasons.appendChild(item);
+  });
+
+  elements.analysisSummaryReasons.classList.toggle("hidden", reasons.length === 0);
+}
+
+function renderPrediction(prediction, assistantLabel, assistantProvider) {
   const expected7d = Number(prediction.expectedReturn7dPct || 0);
   const expected30d = Number(prediction.expectedReturn30dPct || 0);
   const dayClass = prediction.dayChangePct > 0 ? "up" : prediction.dayChangePct < 0 ? "down" : "neutral";
   const dayPrefix = prediction.dayChange > 0 ? "+" : "";
+  const modelBaseLabel = prediction.model?.name === "LinearRegression" ? "LR (15F)" : "Hybrid";
+  const isUpTrend = (expected30d || expected7d) >= 0;
+  const tradeSignal = isUpTrend ? "BUY" : "SELL";
+  const tradeTone = isUpTrend ? "buy" : "sell";
+  const tradeTargetPrice = prediction.predictedPrice30d || prediction.predictedPrice7d;
 
-  elements.activeTickerLabel.textContent = `${assistantLabel} assistant + Trading Pro forecast engine`;
-  elements.tickerTitle.textContent = prediction.ticker;
-  elements.priceLine.textContent =
-    `${formatCurrency(prediction.currentPrice)}  ${dayPrefix}${prediction.dayChange.toFixed(2)} (${formatPercent(prediction.dayChangePct)}) today`;
-  elements.deltaPill.textContent = `7D ${formatPercent(expected7d)}`;
-  elements.deltaPill30.textContent = `30D ${formatPercent(expected30d)}`;
+  latestPrediction = prediction;
+  if (!prediction.chart?.ranges?.some((range) => range.id === activeHistoryRange)) {
+    activeHistoryRange = prediction.chart?.defaultRange || DEFAULT_HISTORY_RANGE;
+  }
+
+  const providerStatusLabel = assistantProvider?.used
+    ? `${assistantLabel} API`
+    : assistantProvider?.configured
+      ? `${assistantLabel} fallback`
+      : `${assistantLabel} mode`;
+  setTextIfPresent(elements.activeTickerLabel, `${providerStatusLabel} forecast for ${prediction.ticker}`);
+  setTextIfPresent(elements.tickerTitle, prediction.ticker);
+  setTextIfPresent(
+    elements.priceLine,
+    `${formatCurrency(prediction.currentPrice)}  ${dayPrefix}${prediction.dayChange.toFixed(2)} (${formatPercent(prediction.dayChangePct)}) today`,
+  );
+  setTextIfPresent(elements.deltaPill, `7D ${formatPercent(expected7d)}`);
+  setTextIfPresent(elements.deltaPill30, `30D ${formatPercent(expected30d)}`);
   elements.deltaPill.className = `delta-pill ${expected7d >= 0 ? "up" : "down"}`;
   elements.deltaPill30.className = `delta-pill secondary ${expected30d >= 0 ? "up" : "down"}`;
 
-  elements.confidenceValue.textContent = `${prediction.confidencePct}%`;
-  elements.targetValue.textContent = formatCurrency(prediction.predictedPrice7d);
-  elements.target30Value.textContent = formatCurrency(prediction.predictedPrice30d || prediction.predictedPrice7d);
-  elements.riskValue.textContent = prediction.riskLevel;
+  setTextIfPresent(elements.confidenceValue, `${prediction.confidencePct}%`);
+  setTextIfPresent(elements.targetValue, formatCurrency(prediction.predictedPrice7d));
+  setTextIfPresent(elements.target30Value, formatCurrency(prediction.predictedPrice30d || prediction.predictedPrice7d));
+  setTextIfPresent(elements.riskValue, prediction.riskLevel);
 
-  elements.aiScoreValue.textContent = `${prediction.aiScore}/10`;
-  elements.sentimentValue.textContent = prediction.sentiment;
-  elements.rsiValue.textContent = `${prediction.indicators.rsi}`;
-  elements.volatilityValue.textContent = `${prediction.indicators.volatilityPct}%`;
-  elements.avgVolumeValue.textContent = formatCompact(prediction.avgVolume20 || 0);
-  elements.momentumValue.textContent = `${prediction.indicators.momentum20Pct}%`;
-  elements.modelValue.textContent = prediction.model?.name === "LinearRegression" ? "LR (15F)" : "Hybrid Fallback";
+  setTextIfPresent(elements.aiScoreValue, `${prediction.aiScore}/10`);
+  setTextIfPresent(elements.sentimentValue, prediction.sentiment);
+  setTextIfPresent(elements.rsiValue, `${prediction.indicators.rsi}`);
+  setTextIfPresent(elements.volatilityValue, `${prediction.indicators.volatilityPct}%`);
+  setTextIfPresent(elements.avgVolumeValue, formatCompact(prediction.avgVolume20 || 0));
+  setTextIfPresent(elements.momentumValue, `${prediction.indicators.momentum20Pct}%`);
+  setTextIfPresent(elements.modelValue, prediction.learning?.enabled ? `${modelBaseLabel} + Learn` : modelBaseLabel);
+  setTextIfPresent(elements.predictionDirection, isUpTrend ? "UP" : "DOWN");
+  setTextIfPresent(
+    elements.predictionDirectionCopy,
+    isUpTrend ? "Good outlook in the coming days" : "Bad outlook in the coming days",
+  );
+  if (elements.predictionDirection) {
+    elements.predictionDirection.className = `prediction-direction ${isUpTrend ? "up" : "down"}`;
+  }
+  setTextIfPresent(elements.tradeCallAction, tradeSignal);
+  setTextIfPresent(
+    elements.tradeCallSummary,
+    isUpTrend
+      ? `${prediction.ticker} is expected to move higher over the next 30 days.`
+      : `${prediction.ticker} is expected to move lower over the next 30 days.`,
+  );
+  setTextIfPresent(
+    elements.tradeCallMeta,
+    `Confidence ${prediction.confidencePct}% · Risk ${prediction.riskLevel} · 30D target ${formatCurrency(tradeTargetPrice)}`,
+  );
+  if (elements.tradeCallCard) {
+    elements.tradeCallCard.className = `trade-call-card ${tradeTone}`;
+  }
 
   const testMae = prediction.diagnostics?.testMAE;
   const baselineMae = prediction.diagnostics?.baselineMAE;
   if (typeof testMae === "number") {
     const beatBaseline = typeof baselineMae === "number" && testMae <= baselineMae;
-    elements.testMaeValue.textContent = `${formatCurrency(testMae)}${beatBaseline ? " ✓" : ""}`;
+    setTextIfPresent(elements.testMaeValue, `${formatCurrency(testMae)}${beatBaseline ? " ✓" : ""}`);
   } else {
-    elements.testMaeValue.textContent = "--";
+    setTextIfPresent(elements.testMaeValue, "--");
   }
 
   elements.priceLine.className = `price-line ${dayClass}`;
 
-  renderInsights(prediction.insights);
-  renderChart(prediction.series.actual, prediction.series.forecast30 || prediction.series.forecast, prediction.ticker);
+  renderHistoryRangeControls(prediction);
+  renderPredictionMeters(prediction, expected7d, expected30d);
+  renderAnalysisSummary(prediction, assistantProvider);
+  renderDriverList(prediction);
+  renderChartFromPrediction(prediction);
 }
 
-function renderChart(actualSeries, forecastSeries, ticker) {
+function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
   const canvas = document.getElementById("priceChart");
   const theme = getThemeTokens();
   if (typeof Chart === "undefined") {
@@ -815,6 +1172,13 @@ function renderChart(actualSeries, forecastSeries, ticker) {
   }
 
   const context = canvas.getContext("2d");
+  const actualGradient = context.createLinearGradient(0, 0, 0, canvas.height || 360);
+  actualGradient.addColorStop(0, "rgba(74, 157, 255, 0.22)");
+  actualGradient.addColorStop(1, "rgba(74, 157, 255, 0.02)");
+  const forecastGradient = context.createLinearGradient(0, 0, 0, canvas.height || 360);
+  forecastGradient.addColorStop(0, "rgba(85, 227, 194, 0.18)");
+  forecastGradient.addColorStop(1, "rgba(85, 227, 194, 0.02)");
+
   const labels = actualSeries.map((point) => formatDateLabel(point.date));
   labels.push(...forecastSeries.map((point) => formatDateLabel(point.date)));
 
@@ -838,19 +1202,23 @@ function renderChart(actualSeries, forecastSeries, ticker) {
           label: "Actual Price",
           data: actualData,
           borderColor: "rgba(74, 157, 255, 1)",
-          backgroundColor: "rgba(74, 157, 255, 0.12)",
-          borderWidth: 2.3,
+          backgroundColor: actualGradient,
+          borderWidth: 2.5,
+          fill: true,
           pointRadius: 0,
+          pointHoverRadius: 4,
           tension: 0.35,
         },
         {
-          label: "Forecast",
+          label: "30D Forecast",
           data: forecastData,
           borderColor: "rgba(85, 227, 194, 1)",
-          backgroundColor: "rgba(85, 227, 194, 0.12)",
+          backgroundColor: forecastGradient,
           borderWidth: 2,
           borderDash: [7, 4],
+          fill: true,
           pointRadius: 0,
+          pointHoverRadius: 4,
           tension: 0.32,
         },
       ],
@@ -870,7 +1238,7 @@ function renderChart(actualSeries, forecastSeries, ticker) {
         },
         title: {
           display: true,
-          text: `${ticker} Price Trajectory & 30-Day Forecast`,
+          text: `${ticker} ${historyLabel} History + 30-Day Forecast`,
           color: theme.titleColor,
           font: { family: "Sora", size: 13 },
         },
@@ -881,7 +1249,7 @@ function renderChart(actualSeries, forecastSeries, ticker) {
             color: theme.tickColor,
             maxRotation: 0,
             autoSkip: true,
-            maxTicksLimit: 10,
+            maxTicksLimit: 12,
           },
           grid: { color: theme.gridColor },
         },
@@ -899,17 +1267,145 @@ function renderChart(actualSeries, forecastSeries, ticker) {
   });
 }
 
+function historyRangeLabel(rangeId) {
+  return {
+    "3m": "3M",
+    "6m": "6M",
+    "1y": "1Y",
+    "2y": "2Y",
+  }[rangeId] || "6M";
+}
+
+function renderHistoryRangeControls(prediction) {
+  if (!elements.historyRangeToggle || !elements.historyRangeLabel) {
+    return;
+  }
+
+  const ranges = prediction?.chart?.ranges?.length
+    ? prediction.chart.ranges
+    : [
+        { id: "3m", label: "3M" },
+        { id: "6m", label: "6M" },
+        { id: "1y", label: "1Y" },
+        { id: "2y", label: "2Y" },
+      ];
+
+  elements.historyRangeToggle.innerHTML = "";
+
+  ranges.forEach((range) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `history-range-btn${range.id === activeHistoryRange ? " active" : ""}`;
+    button.dataset.range = range.id;
+    button.textContent = range.label;
+    button.addEventListener("click", () => {
+      activeHistoryRange = range.id;
+      renderHistoryRangeControls(prediction);
+      renderChartFromPrediction(prediction);
+    });
+    elements.historyRangeToggle.appendChild(button);
+  });
+
+  elements.historyRangeLabel.textContent = `History: ${historyRangeLabel(activeHistoryRange)} · Forecast: 30D`;
+}
+
+function renderChartFromPrediction(prediction) {
+  const actualHistory = prediction?.series?.actualHistory || prediction?.series?.actual || [];
+  const forecastSeries = prediction?.series?.forecast30 || prediction?.series?.forecast || [];
+  const historyDays = HISTORY_RANGE_DAYS[activeHistoryRange] || HISTORY_RANGE_DAYS[DEFAULT_HISTORY_RANGE];
+  const actualSeries = actualHistory.slice(-Math.min(actualHistory.length, historyDays));
+
+  renderChart(actualSeries, forecastSeries, prediction.ticker, historyRangeLabel(activeHistoryRange));
+}
+
+function setMeterFill(element, percentage, tone) {
+  if (!element) {
+    return;
+  }
+
+  element.style.width = `${clampNumber(percentage, 10, 100)}%`;
+  element.dataset.tone = tone;
+}
+
+function renderPredictionMeters(prediction, expected7d, expected30d) {
+  const confidenceTone = prediction.confidencePct >= 72 ? "up" : prediction.confidencePct >= 56 ? "neutral" : "down";
+  const riskTone = prediction.riskLevel === "High" ? "down" : prediction.riskLevel === "Medium" ? "neutral" : "up";
+  const riskLevelWidth = {
+    Low: 32,
+    Medium: 62,
+    High: 92,
+  };
+
+  setMeterFill(elements.confidenceMeter, prediction.confidencePct, confidenceTone);
+  setMeterFill(elements.riskMeter, riskLevelWidth[prediction.riskLevel] || 48, riskTone);
+}
+
+function renderDriverList(prediction) {
+  if (!elements.driverList) {
+    return;
+  }
+
+  const primaryDrivers = Array.isArray(prediction.topFeatures) ? prediction.topFeatures.slice(0, 5) : [];
+  const fallbackDrivers = [
+    {
+      feature: "Momentum20",
+      importance: Math.abs(Number(prediction.indicators?.momentum20Pct || 0)) / 10,
+      coefficient: Number(prediction.indicators?.momentum20Pct || 0),
+    },
+    {
+      feature: "RSI",
+      importance: Math.abs(Number(prediction.indicators?.rsi || 50) - 50) / 50,
+      coefficient: Number(prediction.indicators?.rsi || 50) - 50,
+    },
+    {
+      feature: "Volatility_30d",
+      importance: Math.abs(Number(prediction.indicators?.volatilityPct || 0)) / 10,
+      coefficient: -Math.abs(Number(prediction.indicators?.volatilityPct || 0)),
+    },
+    {
+      feature: "GeoSignal",
+      importance: Math.abs(Number(prediction.geoSentiment?.score || 0)) * 8,
+      coefficient: Number(prediction.geoSentiment?.score || 0),
+    },
+    {
+      feature: "Sentiment",
+      importance: Math.abs(Number(prediction.sentimentScore || 0)) * 8,
+      coefficient: Number(prediction.sentimentScore || 0),
+    },
+  ];
+
+  const drivers = (primaryDrivers.length ? primaryDrivers : fallbackDrivers).map((driver) => ({
+    feature: driver.feature,
+    importance: Math.abs(Number(driver.importance || 0)),
+    coefficient: Number(driver.coefficient || 0),
+  }));
+
+  elements.driverList.innerHTML = "";
+
+  drivers.forEach((driver) => {
+    const tone = driver.coefficient >= 0 ? "up" : "down";
+    const featureLabel = prettifyFeatureLabel(driver.feature);
+    const toneLabel = tone === "up" ? "GOOD" : "BAD";
+    const row = document.createElement("article");
+    row.className = "driver-row";
+    row.innerHTML = `
+      <div class="driver-meta">
+        <div class="driver-copy-block">
+          <span class="driver-name">${featureLabel}</span>
+        </div>
+        <span class="driver-tone ${tone}">${toneLabel}</span>
+      </div>
+    `;
+    elements.driverList.appendChild(row);
+  });
+}
+
 function showTemporaryError(message) {
   elements.resultsShell.classList.remove("hidden");
   document.body.classList.add("has-results");
   elements.deltaPill.textContent = "7D error";
   elements.deltaPill30.textContent = "30D error";
   elements.activeTickerLabel.textContent = message;
-}
-
-async function loadMarketOverview() {
-  const data = await fetchJson("/api/market/overview");
-  renderMarketOverview(data);
 }
 
 async function loadWatchlist() {
@@ -931,6 +1427,7 @@ async function loadWatchlist() {
 
   const items = await Promise.all(requests);
   renderWatchlist(items);
+  renderLandingCards(items);
 }
 
 async function primeDashboardData() {
@@ -938,14 +1435,9 @@ async function primeDashboardData() {
     return;
   }
 
-  await Promise.all([
-    loadMarketOverview().catch((error) => {
-      console.error(error);
-    }),
-    loadWatchlist().catch((error) => {
-      console.error(error);
-    }),
-  ]);
+  await loadWatchlist().catch((error) => {
+    console.error(error);
+  });
   dashboardPrimed = true;
 }
 
@@ -953,6 +1445,12 @@ async function runAssistantQuery(promptText) {
   const trimmedPrompt = (promptText || "").trim();
   if (!trimmedPrompt) {
     return;
+  }
+
+  const promptedModel = inferAssistantModelFromPrompt(trimmedPrompt);
+  if (promptedModel && promptedModel !== activeAssistantModel) {
+    setAssistantModel(promptedModel);
+    renderAssistantSwitch();
   }
 
   lockComposerAfterFirstSearch();
@@ -970,9 +1468,9 @@ async function runAssistantQuery(promptText) {
     ]);
 
     activeTicker = payload.ticker || activeTicker;
-    renderTickerSwitch();
+    renderAssistantSwitch();
     renderSession(payload);
-    renderPrediction(payload.prediction, payload.assistantModel?.label || currentAssistantLabel());
+    renderPrediction(payload.prediction, payload.assistantModel?.label || currentAssistantLabel(), payload.assistantProvider || null);
     renderNews(payload.news?.items || []);
     renderMapInsights(payload.prediction?.mapInsights || null);
     hideAnalysisLoading();
@@ -991,8 +1489,24 @@ async function runAssistantQuery(promptText) {
 function loadTicker(ticker) {
   const cleanTicker = sanitizeTicker(ticker) || WATCHLIST[0];
   activeTicker = cleanTicker;
-  renderTickerSwitch();
-  const prompt = `Analyze ${cleanTicker} with ${currentAssistantLabel()} for 7-day and 30-day stock outlook`;
+  const prompt = buildAnalysisPrompt(cleanTicker);
+  elements.promptInput.value = prompt;
+  autoResizePrompt();
+  runAssistantQuery(prompt);
+}
+
+function loadAssistantModel(modelId) {
+  if (!modelId) {
+    return;
+  }
+
+  setAssistantModel(modelId);
+  renderAssistantSwitch();
+  if (!document.body.classList.contains("has-results")) {
+    return;
+  }
+
+  const prompt = buildAnalysisPrompt(activeTicker);
   elements.promptInput.value = prompt;
   autoResizePrompt();
   runAssistantQuery(prompt);
@@ -1000,7 +1514,20 @@ function loadTicker(ticker) {
 
 function bindEvents() {
   elements.assistantModelSelect.addEventListener("change", (event) => {
-    setAssistantModel(event.target.value);
+    const nextModel = event.target.value;
+    if (nextModel === activeAssistantModel) {
+      return;
+    }
+
+    setAssistantModel(nextModel);
+    renderAssistantSwitch();
+
+    if (document.body.classList.contains("has-results")) {
+      const prompt = buildAnalysisPrompt(activeTicker);
+      elements.promptInput.value = prompt;
+      autoResizePrompt();
+      runAssistantQuery(prompt);
+    }
   });
 
   elements.themeToggle.addEventListener("click", () => {
@@ -1070,19 +1597,31 @@ function bindEvents() {
   });
 
   window.addEventListener("scroll", syncComposerStateOnScroll, { passive: true });
+  window.addEventListener("resize", syncLandingComposerPosition);
+  window.addEventListener("load", syncLandingComposerPosition);
 }
 
 async function bootstrap() {
   applyTheme(loadStoredTheme(), false);
   resetLandingState();
   renderModelControls();
-  renderTickerSwitch();
+  renderAssistantSwitch();
+  setAssistantModel(activeAssistantModel);
   bindEvents();
   autoResizePrompt();
+  syncLandingComposerPosition();
+  if (document.fonts?.ready) {
+    document.fonts.ready.then(() => {
+      syncLandingComposerPosition();
+    });
+  }
   if ("scrollRestoration" in window.history) {
     window.history.scrollRestoration = "manual";
   }
   window.scrollTo({ top: 0, behavior: "auto" });
+  primeDashboardData().catch((error) => {
+    console.error(error);
+  });
 }
 
 bootstrap().catch((error) => {

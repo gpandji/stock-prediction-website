@@ -58,11 +58,12 @@
             <p class="hero-kicker">DISCOVER THE MARKET</p>
             <h1>The Future of Finance Visualized Today</h1>
             <p>
-              Pick any AI Assistant and ask about any stock to get a prediction chart up to 30 days
+              Ask about any stock to get a prediction chart up to 30 days
             </p>
           </div>
 
           <div class="model-pill-row" id="modelPillRow"></div>
+          <div class="landing-stock-rail" id="landingStockRail"></div>
         </section>
 
         <section class="composer-dock" id="composerDock">
@@ -102,26 +103,14 @@
               accept="image/*,.pdf,.csv,.txt,.md,.doc,.docx,.xls,.xlsx"
             />
             <div class="attachment-strip hidden" id="attachmentStrip" aria-live="polite"></div>
-
-            <div class="prompt-suggestions">
-              <button class="prompt-chip" type="button" data-prompt="Analyze TSLA with OpenAI for the next 30 days">
-                TSLA with OpenAI
-              </button>
-              <button class="prompt-chip" type="button" data-prompt="Show me NVIDIA with Gemini and compare the next 7 and 30 days">
-                NVDA with Gemini
-              </button>
-              <button class="prompt-chip" type="button" data-prompt="Study Amazon with DeepSeek and highlight downside risk">
-                AMZN with DeepSeek
-              </button>
-            </div>
           </form>
         </section>
 
         <section class="results-shell hidden" id="resultsShell">
           <section class="market-overview panel">
             <div class="panel-header compact">
-              <h2>Market Overview</h2>
-              <p id="asOfText">Fetching live market data...</p>
+              <h2>Watchlist</h2>
+              <p id="asOfText">Click any stock to run it with the selected AI model</p>
             </div>
             <div class="market-grid" id="marketCards"></div>
           </section>
@@ -130,16 +119,20 @@
             <article class="panel prediction-panel">
               <div class="panel-header">
                 <div>
-                  <h2>Prediction Workspace</h2>
-                  <p class="panel-subtext" id="activeTickerLabel">Live analysis will appear here.</p>
+                  <h2>Prediction</h2>
+                  <p class="panel-subtext" id="activeTickerLabel">Run an analysis to unlock the live board.</p>
                 </div>
-                <div class="ticker-chip-row" id="tickerSwitch"></div>
+                <div class="ticker-chip-row" id="assistantSwitch"></div>
               </div>
 
               <div class="headline-row">
                 <div>
                   <p class="ticker-title" id="tickerTitle">Ticker</p>
                   <p class="price-line" id="priceLine">Loading latest quote...</p>
+                  <div class="prediction-glance">
+                    <span class="prediction-direction up" id="predictionDirection">UP</span>
+                    <span class="prediction-direction-copy" id="predictionDirectionCopy">Good outlook in the coming days</span>
+                  </div>
                 </div>
                 <div class="delta-pair">
                   <div class="delta-pill" id="deltaPill">7D --</div>
@@ -147,88 +140,75 @@
                 </div>
               </div>
 
-              <div class="chart-wrap">
-                <canvas id="priceChart" aria-label="Stock trajectory and AI prediction" role="img"></canvas>
-              </div>
+              <div class="analysis-stage">
+                <div class="analysis-main">
+                  <div class="chart-toolbar">
+                    <div class="history-range-toggle" id="historyRangeToggle" aria-label="Chart history range selector"></div>
+                    <p class="history-range-label" id="historyRangeLabel">History: 6M · Forecast: 30D</p>
+                  </div>
 
-              <div class="metric-row">
-                <div class="metric-card">
-                  <p>AI Confidence</p>
-                  <h3 id="confidenceValue">--</h3>
+                  <div class="chart-wrap">
+                    <canvas id="priceChart" aria-label="Stock trajectory and AI prediction" role="img"></canvas>
+                  </div>
                 </div>
-                <div class="metric-card">
-                  <p>7-Day Target</p>
-                  <h3 id="targetValue">--</h3>
-                </div>
-                <div class="metric-card">
-                  <p>30-Day Target</p>
-                  <h3 id="target30Value">--</h3>
-                </div>
-                <div class="metric-card">
-                  <p>Risk Level</p>
-                  <h3 id="riskValue">--</h3>
-                </div>
-              </div>
 
-              <div class="insights-list" id="insightsList"></div>
+                <aside class="analysis-summary">
+                  <div class="trade-call-card buy" id="tradeCallCard">
+                    <p class="trade-call-kicker">AI Call</p>
+                    <div class="trade-call-main">
+                      <span class="trade-call-action" id="tradeCallAction">BUY</span>
+                    </div>
+                    <p class="trade-call-summary" id="tradeCallSummary">AI expects upside in the next 30 days.</p>
+                    <p class="trade-call-meta" id="tradeCallMeta">Confidence -- · Risk --</p>
+                  </div>
+
+                  <div class="summary-note-card">
+                    <p class="summary-note-kicker">Summary</p>
+                    <p class="summary-note-text" id="analysisSummaryText">
+                      The AI will explain the main reason for the expected move after analysis.
+                    </p>
+                    <ul class="summary-reasons hidden" id="analysisSummaryReasons"></ul>
+                  </div>
+
+                  <div class="metric-row">
+                    <div class="metric-card">
+                      <p>AI Confidence</p>
+                      <h3 id="confidenceValue">--</h3>
+                      <div class="metric-meter"><span id="confidenceMeter"></span></div>
+                    </div>
+                    <div class="metric-card">
+                      <p>Risk Level</p>
+                      <h3 id="riskValue">--</h3>
+                      <div class="metric-meter"><span id="riskMeter"></span></div>
+                    </div>
+                    <div class="metric-card metric-card-target">
+                      <p>7-Day Target</p>
+                      <h3 id="targetValue">--</h3>
+                    </div>
+                    <div class="metric-card metric-card-target">
+                      <p>30-Day Target</p>
+                      <h3 id="target30Value">--</h3>
+                    </div>
+                  </div>
+                </aside>
+              </div>
             </article>
-
-            <aside class="panel watchlist-panel">
-              <div class="panel-header compact">
-                <h2>Quick Tickers</h2>
-                <p>Reuse the same assistant mode on another stock</p>
-              </div>
-              <ul id="watchlistItems" class="watchlist"></ul>
-            </aside>
           </section>
 
           <section class="lower-grid">
             <article class="panel metrics-panel">
               <div class="panel-header compact">
-                <h2>Trading Pro Snapshot</h2>
-                <p>Forecast engine and technical context</p>
+                <h2>Signal Board</h2>
               </div>
 
-              <div class="snapshot-grid">
-                <div class="snapshot-card">
-                  <p>AI Score</p>
-                  <h3 id="aiScoreValue">--</h3>
-                </div>
-                <div class="snapshot-card">
-                  <p>Sentiment</p>
-                  <h3 id="sentimentValue">--</h3>
-                </div>
-                <div class="snapshot-card">
-                  <p>RSI (14)</p>
-                  <h3 id="rsiValue">--</h3>
-                </div>
-                <div class="snapshot-card">
-                  <p>Volatility</p>
-                  <h3 id="volatilityValue">--</h3>
-                </div>
-                <div class="snapshot-card">
-                  <p>Avg Volume (20D)</p>
-                  <h3 id="avgVolumeValue">--</h3>
-                </div>
-                <div class="snapshot-card">
-                  <p>Momentum (20D)</p>
-                  <h3 id="momentumValue">--</h3>
-                </div>
-                <div class="snapshot-card">
-                  <p>Prediction Engine</p>
-                  <h3 id="modelValue">--</h3>
-                </div>
-                <div class="snapshot-card">
-                  <p>Test MAE</p>
-                  <h3 id="testMaeValue">--</h3>
-                </div>
+              <div class="drivers-block">
+                <div class="driver-list" id="driverList"></div>
               </div>
             </article>
 
             <article class="panel news-panel">
               <div class="panel-header compact">
-                <h2>News + Sentiment Feed</h2>
-                <p>Context used to frame the outlook</p>
+                <h2>News + Sentiment</h2>
               </div>
               <ul id="newsList" class="news-list"></ul>
               <button id="newsToggleBtn" class="news-toggle hidden" type="button">Show More</button>
@@ -238,8 +218,8 @@
           <section class="geo-grid">
             <article class="panel map-panel">
               <div class="panel-header compact">
-                <h2>Geo Sentiment Map</h2>
-                <p id="mapProviderText">Loading mapping data...</p>
+                <h2>Global Footprint</h2>
+                <p id="mapProviderText" class="hidden" aria-hidden="true">Loading mapping data...</p>
               </div>
               <div id="sentimentMap" class="map-canvas" aria-label="Geographic sentiment map"></div>
               <div id="geoModeBar" class="map-mode-row" aria-label="Geographic map mode selector"></div>
@@ -247,8 +227,8 @@
 
             <article class="panel region-panel">
               <div class="panel-header compact">
-                <h2>Regional Signals</h2>
-                <p id="regionModeText">Mode-aware regional exposure and sentiment signals</p>
+                <h2>Regional Pulse</h2>
+                <p id="regionModeText" class="hidden" aria-hidden="true">Mode-aware regional exposure and sentiment signals</p>
               </div>
               <ul id="regionList" class="region-list"></ul>
             </article>
