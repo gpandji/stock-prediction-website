@@ -1749,6 +1749,7 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
           borderWidth: 0,
           pointRadius: 0,
           pointHoverRadius: 0,
+          pointHitRadius: activeHistoryRange === "1d" ? 14 : 10,
           fill: false,
           tension: 0,
         },
@@ -1785,9 +1786,48 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
           color: theme.titleColor,
           font: { family: "Sora", size: 13 },
         },
+        tooltip: {
+          displayColors: true,
+          callbacks: {
+            title(items) {
+              const item = items?.[0];
+              if (!item) {
+                return "";
+              }
+              const index = item.dataIndex;
+              const sourcePoint = index < actualSeries.length
+                ? actualSeries[index]
+                : forecastSeries[index - actualSeries.length];
+              return sourcePoint?.date ? formatDateLabel(sourcePoint.date) : labels[index] || "";
+            },
+            label(item) {
+              const index = item.dataIndex;
+              if (item.datasetIndex === 0 && index < candles.length) {
+                const candle = candles[index];
+                return [
+                  `Open ${formatCurrency(candle.open)}`,
+                  `High ${formatCurrency(candle.high)}`,
+                  `Low ${formatCurrency(candle.low)}`,
+                  `Close ${formatCurrency(candle.close)}`,
+                ];
+              }
+              if (item.datasetIndex === 1 && index >= Math.max(actualSeries.length - 1, 0)) {
+                const value = item.raw;
+                return `${forecastLabel} ${formatCurrency(value)}`;
+              }
+              return `${item.dataset.label} ${formatCurrency(item.raw)}`;
+            },
+          },
+        },
       },
       scales: {
         x: {
+          title: {
+            display: true,
+            text: activeHistoryRange === "1d" ? "Time" : "Date",
+            color: theme.tickColor,
+            font: { family: "IBM Plex Sans", size: 11, weight: "600" },
+          },
           ticks: {
             color: theme.tickColor,
             maxRotation: 0,
@@ -1800,6 +1840,12 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
           beginAtZero: false,
           min: bounds.min,
           max: bounds.max,
+          title: {
+            display: true,
+            text: "Price (USD)",
+            color: theme.tickColor,
+            font: { family: "IBM Plex Sans", size: 11, weight: "600" },
+          },
           ticks: {
             color: theme.tickColor,
             callback(value) {
