@@ -91,6 +91,9 @@ ASSISTANT_PROVIDER_CONFIG = {
 MAX_CHART_HISTORY_DAYS = 504
 DEFAULT_CHART_RANGE = "6m"
 CHART_RANGE_OPTIONS = [
+    {"id": "1d", "label": "24H", "days": 2},
+    {"id": "5d", "label": "5D", "days": 5},
+    {"id": "1m", "label": "1M", "days": 21},
     {"id": "3m", "label": "3M", "days": 63},
     {"id": "6m", "label": "6M", "days": 126},
     {"id": "1y", "label": "1Y", "days": 252},
