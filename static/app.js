@@ -16,6 +16,8 @@ const WATCHLIST_META = {
 };
 const THEME_STORAGE_KEY = "trading-pro-theme";
 const HISTORY_RANGE_DAYS = {
+  "1d": 2,
+  "5d": 5,
   "1m": 21,
   "3m": 63,
   "6m": 126,
@@ -85,6 +87,9 @@ let latestNewsItems = [];
 let newsExpanded = false;
 let latestPrediction = null;
 let activeHistoryRange = DEFAULT_HISTORY_RANGE;
+const INTRADAY_BAR_WIDTH = 15;
+const INTRADAY_FORECAST_BAR_WIDTH = 18;
+const INTRADAY_MIN_CHART_WIDTH = 1700;
 
 const elements = {
   workspace: document.querySelector(".workspace"),
@@ -117,6 +122,9 @@ const elements = {
   historyRangeToggle: document.getElementById("historyRangeToggle"),
   chartModeToggle: document.getElementById("chartModeToggle"),
   historyRangeLabel: document.getElementById("historyRangeLabel"),
+  chartWrap: document.getElementById("chartWrap"),
+  chartScrollViewport: document.getElementById("chartScrollViewport"),
+  chartScrollSurface: document.getElementById("chartScrollSurface"),
   tradeCallCard: document.getElementById("tradeCallCard"),
   tradeCallAction: document.getElementById("tradeCallAction"),
   tradeCallSummary: document.getElementById("tradeCallSummary"),
@@ -197,6 +205,9 @@ function formatDateLabel(dateText) {
   const parsed = new Date(dateText);
   if (Number.isNaN(parsed.getTime())) {
     return dateText;
+  }
+  if (activeHistoryRange === "1d") {
+    return parsed.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
   }
   return parsed.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
@@ -1469,12 +1480,12 @@ function renderPrediction(prediction, assistantLabel, assistantProvider) {
 
 function buildCandlestickSeries(actualSeries) {
   return actualSeries.map((point, index) => {
-    const prevClose = Number(actualSeries[index - 1]?.price ?? point.price);
-    const close = Number(point.price || 0);
-    const open = prevClose;
-    const spread = Math.max(Math.abs(close - open), close * 0.004);
-    const high = Math.max(open, close) + spread * 0.35;
-    const low = Math.min(open, close) - spread * 0.35;
+    const prevClose = Number((actualSeries[index - 1]?.close ?? actualSeries[index - 1]?.price ?? point.price));
+    const close = Number((point.close ?? point.price ?? 0));
+    const open = Number(point.open ?? prevClose);
+    const spread = Math.max(Math.abs(close - open), close * 0.0035);
+    const high = Number(point.high ?? (Math.max(open, close) + spread * 0.95));
+    const low = Number(point.low ?? (Math.min(open, close) - spread * 0.95));
     return {
       date: point.date,
       open,
@@ -1483,6 +1494,91 @@ function buildCandlestickSeries(actualSeries) {
       close,
       up: close >= open,
     };
+  });
+}
+
+function buildShortHorizonForecast(prediction) {
+  const intradaySeries = prediction?.series?.intraday || [];
+  const lastPoint = intradaySeries[intradaySeries.length - 1] || null;
+  const baseTime = lastPoint?.date ? new Date(lastPoint.date) : (prediction.cache?.generatedAt ? new Date(prediction.cache.generatedAt) : new Date());
+  const resolvedBaseTime = Number.isNaN(baseTime.getTime()) ? new Date() : baseTime;
+  const startPrice = Number((lastPoint?.close ?? prediction.currentPrice ?? 0));
+  const expectedReturn7d = Number(prediction.expectedReturn7dPct || 0) / 100;
+  const totalIntervals = 24;
+  const twoHourReturn = expectedReturn7d * (2 / (7 * 6.5));
+  const points = [];
+
+  for (let index = 1; index <= totalIntervals; index += 1) {
+    const progress = index / totalIntervals;
+    const projectedPrice = startPrice * (1 + (twoHourReturn * progress));
+    points.push({
+      date: new Date(resolvedBaseTime.getTime() + (5 * 60 * 1000 * index)).toISOString(),
+      price: Number(projectedPrice.toFixed(4)),
+    });
+  }
+
+  return points;
+}
+
+function chartBounds(actualSeries, forecastSeries, candleSeries = []) {
+  const values = [];
+  actualSeries.forEach((point) => values.push(Number(point.price || 0)));
+  forecastSeries.forEach((point) => values.push(Number(point.price || 0)));
+  candleSeries.forEach((candle) => {
+    values.push(Number(candle.low || 0));
+    values.push(Number(candle.high || 0));
+  });
+
+  const cleanValues = values.filter((value) => Number.isFinite(value) && value > 0);
+  if (!cleanValues.length) {
+    return {};
+  }
+
+  const minValue = Math.min(...cleanValues);
+  const maxValue = Math.max(...cleanValues);
+  const span = Math.max(maxValue - minValue, maxValue * 0.015);
+  const padding = span * 0.28;
+
+  return {
+    min: Number((minValue - padding).toFixed(2)),
+    max: Number((maxValue + padding).toFixed(2)),
+  };
+}
+
+function intradayCanvasWidth(actualCount, forecastCount) {
+  const baseWidth = (actualCount * INTRADAY_BAR_WIDTH) + (forecastCount * INTRADAY_FORECAST_BAR_WIDTH) + 220;
+  return Math.max(INTRADAY_MIN_CHART_WIDTH, baseWidth);
+}
+
+function configureChartViewport(actualCount, forecastCount) {
+  const canvas = document.getElementById("priceChart");
+  if (!canvas || !elements.chartScrollSurface || !elements.chartScrollViewport || !elements.chartWrap) {
+    return;
+  }
+
+  if (activeHistoryRange === "1d") {
+    const width = intradayCanvasWidth(actualCount, forecastCount);
+    elements.chartWrap.classList.add("is-scrollable");
+    elements.chartScrollSurface.style.width = `${width}px`;
+    canvas.width = width;
+    canvas.style.width = `${width}px`;
+    return;
+  }
+
+  elements.chartWrap.classList.remove("is-scrollable");
+  elements.chartScrollSurface.style.width = "100%";
+  canvas.style.width = "100%";
+  canvas.removeAttribute("width");
+}
+
+function scrollChartViewportToLatest() {
+  if (activeHistoryRange !== "1d" || !elements.chartScrollViewport) {
+    return;
+  }
+
+  window.requestAnimationFrame(() => {
+    const viewport = elements.chartScrollViewport;
+    viewport.scrollLeft = Math.max(viewport.scrollWidth - viewport.clientWidth, 0);
   });
 }
 
@@ -1504,6 +1600,13 @@ function renderLineChart(context, actualSeries, forecastSeries, ticker, historyL
   forecastData.push(actualSeries[actualSeries.length - 1]?.price || null);
   forecastData.push(...forecastSeries.map((point) => point.price));
 
+  const bounds = chartBounds(actualSeries, forecastSeries);
+
+  const forecastLabel = activeHistoryRange === "1d" ? "2H Forecast" : "30D Forecast";
+  const titleLabel = activeHistoryRange === "1d"
+    ? `${ticker} 24H Price + 2-Hour Forecast`
+    : `${ticker} ${historyLabel} History + 30-Day Forecast`;
+
   return new Chart(context, {
     type: "line",
     data: {
@@ -1521,15 +1624,15 @@ function renderLineChart(context, actualSeries, forecastSeries, ticker, historyL
           tension: 0.35,
         },
         {
-          label: "30D Forecast",
+          label: forecastLabel,
           data: forecastData,
           borderColor: "rgba(85, 227, 194, 1)",
           backgroundColor: forecastGradient,
           borderWidth: 2,
           borderDash: [7, 4],
           fill: true,
-          pointRadius: 0,
-          pointHoverRadius: 4,
+          pointRadius: activeHistoryRange === "1d" ? 2.5 : 0,
+          pointHoverRadius: 5,
           tension: 0.32,
         },
       ],
@@ -1549,7 +1652,7 @@ function renderLineChart(context, actualSeries, forecastSeries, ticker, historyL
         },
         title: {
           display: true,
-          text: `${ticker} ${historyLabel} History + 30-Day Forecast`,
+          text: titleLabel,
           color: theme.titleColor,
           font: { family: "Sora", size: 13 },
         },
@@ -1560,11 +1663,14 @@ function renderLineChart(context, actualSeries, forecastSeries, ticker, historyL
             color: theme.tickColor,
             maxRotation: 0,
             autoSkip: true,
-            maxTicksLimit: 12,
+            maxTicksLimit: activeHistoryRange === "1d" ? 22 : 12,
           },
           grid: { color: theme.gridColor },
         },
         y: {
+          beginAtZero: false,
+          min: bounds.min,
+          max: bounds.max,
           ticks: {
             color: theme.tickColor,
             callback(value) {
@@ -1589,12 +1695,19 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
   const bodyData = candles.map((candle) => [candle.open, candle.close]);
   bodyData.push(...Array(forecastSeries.length).fill(null));
 
-  const bodyColors = candles.map((candle) => (candle.up ? "rgba(45, 211, 159, 0.92)" : "rgba(255, 111, 125, 0.92)"));
+  const wickColors = candles.map((candle) => (candle.up ? "rgba(151, 255, 206, 0.96)" : "rgba(255, 170, 180, 0.96)"));
+  const bodyColors = candles.map((candle) => (candle.up ? "rgba(134, 221, 54, 0.98)" : "rgba(255, 78, 98, 0.98)"));
   bodyColors.push(...Array(forecastSeries.length).fill("rgba(0,0,0,0)"));
 
   const forecastData = Array(Math.max(actualSeries.length - 1, 0)).fill(null);
   forecastData.push(actualSeries[actualSeries.length - 1]?.price || null);
   forecastData.push(...forecastSeries.map((point) => point.price));
+
+  const bounds = chartBounds(actualSeries, forecastSeries, candles);
+  const forecastLabel = activeHistoryRange === "1d" ? "2H Forecast" : "30D Forecast";
+  const titleLabel = activeHistoryRange === "1d"
+    ? `${ticker} 24H Candles + 2-Hour Forecast`
+    : `${ticker} ${historyLabel} Candles + 30-Day Forecast`;
 
   return new Chart(context, {
     type: "bar",
@@ -1604,32 +1717,35 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
         {
           label: "Wick",
           data: wickData,
-          backgroundColor: candles.map((candle) => (candle.up ? "rgba(45, 211, 159, 0.35)" : "rgba(255, 111, 125, 0.35)")).concat(Array(forecastSeries.length).fill("rgba(0,0,0,0)")),
+          backgroundColor: wickColors.concat(Array(forecastSeries.length).fill("rgba(0,0,0,0)")),
+          borderColor: wickColors.concat(Array(forecastSeries.length).fill("rgba(0,0,0,0)")),
+          borderWidth: 1.6,
           borderSkipped: false,
-          borderRadius: 4,
-          barPercentage: 0.12,
-          categoryPercentage: 0.88,
+          borderRadius: 3,
+          barPercentage: activeHistoryRange === "1d" ? 0.14 : 0.12,
+          categoryPercentage: 0.9,
         },
         {
           label: "Candle",
           data: bodyData,
           backgroundColor: bodyColors,
-          borderColor: bodyColors,
+          borderColor: candles.map((candle) => (candle.up ? "rgba(197, 255, 140, 1)" : "rgba(255, 132, 144, 1)")).concat(Array(forecastSeries.length).fill("rgba(0,0,0,0)")),
+          borderWidth: 1.8,
           borderSkipped: false,
-          borderRadius: 6,
-          barPercentage: 0.56,
-          categoryPercentage: 0.88,
+          borderRadius: 2,
+          barPercentage: activeHistoryRange === "1d" ? 0.74 : 0.68,
+          categoryPercentage: 0.9,
         },
         {
           type: "line",
-          label: "30D Forecast",
+          label: forecastLabel,
           data: forecastData,
           borderColor: "rgba(255, 191, 105, 1)",
           backgroundColor: "rgba(255, 191, 105, 0.12)",
           borderWidth: 2,
           borderDash: [7, 4],
-          pointRadius: 0,
-          pointHoverRadius: 4,
+          pointRadius: activeHistoryRange === "1d" ? 3 : 0,
+          pointHoverRadius: 5,
           tension: 0.25,
         },
       ],
@@ -1650,7 +1766,7 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
         },
         title: {
           display: true,
-          text: `${ticker} ${historyLabel} Candles + 30-Day Forecast`,
+          text: titleLabel,
           color: theme.titleColor,
           font: { family: "Sora", size: 13 },
         },
@@ -1662,11 +1778,14 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
             color: theme.tickColor,
             maxRotation: 0,
             autoSkip: true,
-            maxTicksLimit: 12,
+            maxTicksLimit: activeHistoryRange === "1d" ? 16 : 12,
           },
           grid: { color: theme.gridColor },
         },
         y: {
+          beginAtZero: false,
+          min: bounds.min,
+          max: bounds.max,
           ticks: {
             color: theme.tickColor,
             callback(value) {
@@ -1693,6 +1812,7 @@ function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
   }
 
   const context = canvas.getContext("2d");
+  configureChartViewport(actualSeries.length, forecastSeries.length);
   if (priceChart) {
     priceChart.destroy();
   }
@@ -1700,10 +1820,13 @@ function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
   priceChart = activeChartMode === "candles"
     ? renderCandlestickChart(context, actualSeries, forecastSeries, ticker, historyLabel, theme)
     : renderLineChart(context, actualSeries, forecastSeries, ticker, historyLabel, theme);
+  scrollChartViewportToLatest();
 }
 
 function historyRangeLabel(rangeId) {
   return {
+    "1d": "24H",
+    "5d": "5D",
     "1m": "1M Daily",
     "3m": "3M",
     "6m": "6M",
@@ -1747,6 +1870,8 @@ function renderHistoryRangeControls(prediction) {
   const ranges = prediction?.chart?.ranges?.length
     ? prediction.chart.ranges
     : [
+        { id: "1d", label: "24H" },
+        { id: "5d", label: "5D" },
         { id: "1m", label: "1M" },
         { id: "3m", label: "3M" },
         { id: "6m", label: "6M" },
@@ -1771,14 +1896,21 @@ function renderHistoryRangeControls(prediction) {
   });
 
   renderChartModeControls(prediction);
-  elements.historyRangeLabel.textContent = `History: ${historyRangeLabel(activeHistoryRange)} · Forecast: 30D`;
+  const forecastLabel = activeHistoryRange === "1d" ? "2H" : "30D";
+  elements.historyRangeLabel.textContent = `History: ${historyRangeLabel(activeHistoryRange)} · Forecast: ${forecastLabel}`;
 }
 
 function renderChartFromPrediction(prediction) {
-  const actualHistory = prediction?.series?.actualHistory || prediction?.series?.actual || [];
-  const forecastSeries = prediction?.series?.forecast30 || prediction?.series?.forecast || [];
+  const actualHistory = activeHistoryRange === "1d"
+    ? (prediction?.series?.intraday || [])
+    : (prediction?.series?.actualHistory || prediction?.series?.actual || []);
+  const forecastSeries = activeHistoryRange === "1d"
+    ? buildShortHorizonForecast(prediction)
+    : (prediction?.series?.forecast30 || prediction?.series?.forecast || []);
   const historyDays = HISTORY_RANGE_DAYS[activeHistoryRange] || HISTORY_RANGE_DAYS[DEFAULT_HISTORY_RANGE];
-  const actualSeries = actualHistory.slice(-Math.min(actualHistory.length, historyDays));
+  const actualSeries = activeHistoryRange === "1d"
+    ? actualHistory
+    : actualHistory.slice(-Math.min(actualHistory.length, historyDays));
 
   renderChart(actualSeries, forecastSeries, prediction.ticker, historyRangeLabel(activeHistoryRange));
 }

@@ -138,8 +138,12 @@
                     <p class="history-range-label" id="historyRangeLabel">History: 6M · Forecast: 30D</p>
                   </div>
 
-                  <div class="chart-wrap">
-                    <canvas id="priceChart" aria-label="Stock trajectory and AI prediction" role="img"></canvas>
+                  <div class="chart-wrap" id="chartWrap">
+                    <div class="chart-scroll-viewport" id="chartScrollViewport">
+                      <div class="chart-scroll-surface" id="chartScrollSurface">
+                        <canvas id="priceChart" aria-label="Stock trajectory and AI prediction" role="img"></canvas>
+                      </div>
+                    </div>
                   </div>
                 </div>
 

@@ -6,21 +6,12 @@ import math
 import os
 import random
 import statistics
-import threading
 import time
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
-
-try:
-    import psycopg
-
-    PSYCOPG_AVAILABLE = True
-except Exception:
-    psycopg = None
-    PSYCOPG_AVAILABLE = False
 
 try:
     from sklearn.linear_model import LinearRegression
@@ -38,32 +29,11 @@ CACHE = {}
 APP_USER_AGENT = "TradePro-AI/1.2 (+https://local-app)"
 NEWS_API_KEY = os.environ.get("NEWSAPI_KEY", "").strip()
 NEWS_API_PROVIDER = os.environ.get("NEWS_API_PROVIDER", "auto").strip().lower()
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
-PREDICTION_CACHE_TTL_SECONDS = max(60, int(os.environ.get("PREDICTION_CACHE_TTL_SECONDS", "300") or "300"))
-MARKET_OVERVIEW_CACHE_TTL_SECONDS = max(
-    60, int(os.environ.get("MARKET_OVERVIEW_CACHE_TTL_SECONDS", "300") or "300")
-)
-PREDICTION_REFRESH_INTERVAL_SECONDS = max(
-    60, int(os.environ.get("PREDICTION_REFRESH_INTERVAL_SECONDS", "300") or "300")
-)
-DEFAULT_WARM_TICKERS = ["TSLA", "NVDA", "AMZN", "AAPL", "MSFT", "GOOGL"]
-PREDICTION_WARM_TICKERS = [
-    sanitize.strip().upper()
-    for sanitize in os.environ.get("PREDICTION_WARM_TICKERS", ",".join(DEFAULT_WARM_TICKERS)).split(",")
-    if sanitize.strip()
-]
-POSTGRES_ENABLED = bool(DATABASE_URL and PSYCOPG_AVAILABLE)
-POSTGRES_STATUS = {
-    "enabled": POSTGRES_ENABLED,
-    "available": PSYCOPG_AVAILABLE,
-    "configured": bool(DATABASE_URL),
-    "lastInitError": None,
-    "lastRefreshAt": None,
-    "lastRefreshError": None,
+YAHOO_BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
 }
-POSTGRES_INIT_LOCK = threading.Lock()
-POSTGRES_READY = False
-PREDICTION_REFRESH_STOP = threading.Event()
 
 MARKET_SYMBOLS = [
     ("SPY", "S&P 500"),
@@ -121,7 +91,6 @@ ASSISTANT_PROVIDER_CONFIG = {
 MAX_CHART_HISTORY_DAYS = 504
 DEFAULT_CHART_RANGE = "6m"
 CHART_RANGE_OPTIONS = [
-    {"id": "1m", "label": "1M", "days": 21},
     {"id": "3m", "label": "3M", "days": 63},
     {"id": "6m", "label": "6M", "days": 126},
     {"id": "1y", "label": "1Y", "days": 252},
@@ -624,371 +593,6 @@ def cached(key, ttl_seconds, loader):
     return value
 
 
-def get_postgres_connection():
-    if not POSTGRES_ENABLED:
-        raise RuntimeError("Postgres cache is not configured")
-    return psycopg.connect(DATABASE_URL, autocommit=True)
-
-
-def init_postgres():
-    global POSTGRES_READY
-
-    if not POSTGRES_ENABLED:
-        return False
-    if POSTGRES_READY:
-        return True
-
-    with POSTGRES_INIT_LOCK:
-        if POSTGRES_READY:
-            return True
-
-        try:
-            with get_postgres_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        """
-                        create table if not exists prediction_cache (
-                            ticker text primary key,
-                            payload_json jsonb not null,
-                            generated_at timestamptz not null default now(),
-                            source text not null default 'live'
-                        )
-                        """
-                    )
-                    cur.execute(
-                        """
-                        create table if not exists market_overview_cache (
-                            cache_key text primary key,
-                            payload_json jsonb not null,
-                            generated_at timestamptz not null default now()
-                        )
-                        """
-                    )
-                    cur.execute(
-                        """
-                        create table if not exists prediction_snapshots (
-                            id bigserial primary key,
-                            ticker text not null,
-                            source text not null default 'live',
-                            payload_json jsonb not null,
-                            generated_at timestamptz not null default now()
-                        )
-                        """
-                    )
-                    cur.execute(
-                        """
-                        create table if not exists assistant_query_log (
-                            id bigserial primary key,
-                            prompt_text text not null,
-                            ticker text not null,
-                            assistant_model text not null,
-                            provider_used boolean not null default false,
-                            confidence_pct integer,
-                            expected_return_30d_pct double precision,
-                            created_at timestamptz not null default now()
-                        )
-                        """
-                    )
-            POSTGRES_READY = True
-            POSTGRES_STATUS["lastInitError"] = None
-            return True
-        except Exception as exc:
-            POSTGRES_STATUS["lastInitError"] = str(exc)
-            return False
-
-
-def parse_iso_datetime(raw_value):
-    if not raw_value:
-        return None
-    if isinstance(raw_value, datetime):
-        return raw_value
-    raw_text = str(raw_value).strip()
-    if raw_text.endswith("Z"):
-        raw_text = raw_text[:-1] + "+00:00"
-    try:
-        return datetime.fromisoformat(raw_text)
-    except ValueError:
-        return None
-
-
-def stamp_prediction_cache_metadata(prediction, source, generated_at, stale=False):
-    payload = json.loads(json.dumps(prediction))
-    if isinstance(generated_at, datetime):
-        generated_value = generated_at.isoformat()
-    else:
-        generated_value = generated_at or datetime.utcnow().isoformat() + "Z"
-    payload["cache"] = {
-        "source": source,
-        "generatedAt": generated_value,
-        "ttlSeconds": PREDICTION_CACHE_TTL_SECONDS,
-        "stale": bool(stale),
-    }
-    return payload
-
-
-def load_cached_prediction_from_postgres(ticker, max_age_seconds=None):
-    ticker = sanitize_ticker(ticker)
-    if not init_postgres():
-        return None
-
-    with get_postgres_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                select payload_json, generated_at
-                from prediction_cache
-                where ticker = %s
-                """,
-                (ticker,),
-            )
-            row = cur.fetchone()
-
-    if not row:
-        return None
-
-    payload, generated_at = row
-    generated_dt = parse_iso_datetime(generated_at)
-    if max_age_seconds is not None and generated_dt:
-        age_seconds = (datetime.utcnow() - generated_dt.replace(tzinfo=None)).total_seconds()
-        if age_seconds > max_age_seconds:
-            return None
-
-    return stamp_prediction_cache_metadata(payload, "postgres", generated_dt, stale=False)
-
-
-def load_stale_prediction_from_postgres(ticker):
-    ticker = sanitize_ticker(ticker)
-    if not init_postgres():
-        return None
-
-    with get_postgres_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                select payload_json, generated_at
-                from prediction_cache
-                where ticker = %s
-                """,
-                (ticker,),
-            )
-            row = cur.fetchone()
-
-    if not row:
-        return None
-
-    payload, generated_at = row
-    generated_dt = parse_iso_datetime(generated_at)
-    return stamp_prediction_cache_metadata(payload, "postgres", generated_dt, stale=True)
-
-
-def store_prediction_in_postgres(ticker, prediction):
-    ticker = sanitize_ticker(ticker)
-    if not init_postgres():
-        return False
-
-    clean_prediction = dict(prediction)
-    clean_prediction.pop("cache", None)
-
-    with get_postgres_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                insert into prediction_cache (ticker, payload_json, generated_at, source)
-                values (%s, %s::jsonb, now(), %s)
-                on conflict (ticker)
-                do update set
-                    payload_json = excluded.payload_json,
-                    generated_at = excluded.generated_at,
-                    source = excluded.source
-                """,
-                (ticker, json.dumps(clean_prediction), "live"),
-            )
-    return True
-
-
-def store_prediction_snapshot_in_postgres(ticker, prediction, source="live"):
-    ticker = sanitize_ticker(ticker)
-    if not init_postgres():
-        return False
-
-    clean_prediction = dict(prediction)
-    clean_prediction.pop("cache", None)
-
-    with get_postgres_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                insert into prediction_snapshots (ticker, source, payload_json)
-                values (%s, %s, %s::jsonb)
-                """,
-                (ticker, source, json.dumps(clean_prediction)),
-            )
-    return True
-
-
-def load_cached_market_overview_from_postgres(max_age_seconds=None):
-    if not init_postgres():
-        return None
-
-    with get_postgres_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                select payload_json, generated_at
-                from market_overview_cache
-                where cache_key = %s
-                """,
-                ("default",),
-            )
-            row = cur.fetchone()
-
-    if not row:
-        return None
-
-    payload, generated_at = row
-    generated_dt = parse_iso_datetime(generated_at)
-    if max_age_seconds is not None and generated_dt:
-        age_seconds = (datetime.utcnow() - generated_dt.replace(tzinfo=None)).total_seconds()
-        if age_seconds > max_age_seconds:
-            return None
-
-    return payload
-
-
-def store_market_overview_in_postgres(payload):
-    if not init_postgres():
-        return False
-
-    with get_postgres_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                insert into market_overview_cache (cache_key, payload_json, generated_at)
-                values (%s, %s::jsonb, now())
-                on conflict (cache_key)
-                do update set
-                    payload_json = excluded.payload_json,
-                    generated_at = excluded.generated_at
-                """,
-                ("default", json.dumps(payload)),
-            )
-    return True
-
-
-def log_assistant_query_in_postgres(prompt_text, ticker, assistant_model, prediction, provider_used=False):
-    if not init_postgres():
-        return False
-
-    with get_postgres_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                insert into assistant_query_log (
-                    prompt_text,
-                    ticker,
-                    assistant_model,
-                    provider_used,
-                    confidence_pct,
-                    expected_return_30d_pct
-                )
-                values (%s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    prompt_text,
-                    sanitize_ticker(ticker),
-                    str(assistant_model or ""),
-                    bool(provider_used),
-                    int(safe_float(prediction.get("confidencePct"), 0)),
-                    float(safe_float(prediction.get("expectedReturn30dPct"), 0.0)),
-                ),
-            )
-    return True
-
-
-def fetch_postgres_usage_summary():
-    if not init_postgres():
-        return {}
-
-    summary = {}
-    with get_postgres_connection() as conn:
-        with conn.cursor() as cur:
-            for key, table_name in (
-                ("predictionSnapshots", "prediction_snapshots"),
-                ("assistantQueries", "assistant_query_log"),
-            ):
-                cur.execute(f"select count(*) from {table_name}")
-                row = cur.fetchone()
-                summary[key] = int(row[0]) if row else 0
-    return summary
-
-
-def build_prediction_live(ticker):
-    prediction = build_prediction(ticker)
-    if POSTGRES_ENABLED:
-        try:
-            store_prediction_in_postgres(ticker, prediction)
-            store_prediction_snapshot_in_postgres(ticker, prediction, source="live")
-        except Exception as exc:
-            POSTGRES_STATUS["lastRefreshError"] = str(exc)
-    return stamp_prediction_cache_metadata(prediction, "live", datetime.utcnow(), stale=False)
-
-
-def get_prediction_response(ticker, allow_stale_fallback=True):
-    ticker = sanitize_ticker(ticker)
-
-    if POSTGRES_ENABLED:
-        try:
-            cached_prediction = load_cached_prediction_from_postgres(
-                ticker, max_age_seconds=PREDICTION_CACHE_TTL_SECONDS
-            )
-            if cached_prediction:
-                return cached_prediction
-        except Exception as exc:
-            POSTGRES_STATUS["lastRefreshError"] = str(exc)
-
-    try:
-        return build_prediction_live(ticker)
-    except Exception as exc:
-        if POSTGRES_ENABLED and allow_stale_fallback:
-            stale_prediction = load_stale_prediction_from_postgres(ticker)
-            if stale_prediction:
-                stale_prediction["cache"]["error"] = str(exc)
-                return stale_prediction
-        raise
-
-
-def refresh_prediction_cache_once():
-    if not POSTGRES_ENABLED:
-        return
-
-    refresh_errors = []
-    for ticker in PREDICTION_WARM_TICKERS:
-        try:
-            build_prediction_live(ticker)
-        except Exception as exc:
-            refresh_errors.append(f"{ticker}: {exc}")
-
-    POSTGRES_STATUS["lastRefreshAt"] = datetime.utcnow().isoformat() + "Z"
-    POSTGRES_STATUS["lastRefreshError"] = "; ".join(refresh_errors) if refresh_errors else None
-
-
-def prediction_refresh_worker():
-    while not PREDICTION_REFRESH_STOP.is_set():
-        try:
-            refresh_prediction_cache_once()
-        except Exception as exc:
-            POSTGRES_STATUS["lastRefreshError"] = str(exc)
-        PREDICTION_REFRESH_STOP.wait(PREDICTION_REFRESH_INTERVAL_SECONDS)
-
-
-def start_prediction_refresh_worker():
-    if not POSTGRES_ENABLED:
-        return None
-    worker = threading.Thread(target=prediction_refresh_worker, name="prediction-cache-warmer", daemon=True)
-    worker.start()
-    return worker
-
-
 def stooq_symbol(ticker):
     ticker = sanitize_ticker(ticker)
     index_map = {
@@ -1004,6 +608,75 @@ def stooq_symbol(ticker):
     if "." in ticker:
         return ticker.lower()
     return f"{ticker.lower()}.us"
+
+
+def yahoo_chart_range(points):
+    count = max(1, int(points or 0))
+    if count <= 5:
+        return "5d"
+    if count <= 22:
+        return "1mo"
+    if count <= 66:
+        return "3mo"
+    if count <= 132:
+        return "6mo"
+    if count <= 270:
+        return "1y"
+    return "2y"
+
+
+def fetch_yahoo_history(ticker, range_value="2y"):
+    ticker = sanitize_ticker(ticker)
+    url = (
+        f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(ticker)}"
+        f"?interval=1d&range={quote(range_value)}&includePrePost=false&events=div%2Csplits"
+    )
+    raw = fetch_url(url, headers=YAHOO_BROWSER_HEADERS).decode("utf-8", errors="ignore")
+    payload = json.loads(raw)
+    chart = payload.get("chart", {})
+    result = (chart.get("result") or [None])[0]
+    if chart.get("error") or not result:
+        raise ValueError(f"Yahoo chart did not return data for {ticker}")
+
+    indicators = result.get("indicators", {})
+    quote_rows = (indicators.get("quote") or [{}])[0]
+    timestamps = result.get("timestamp") or []
+
+    rows = []
+    for idx, timestamp in enumerate(timestamps):
+        closes = quote_rows.get("close") or []
+        close_raw = closes[idx] if idx < len(closes) else None
+        if close_raw in (None, ""):
+            continue
+
+        close = safe_float(close_raw, 0.0)
+        opens = quote_rows.get("open") or []
+        highs = quote_rows.get("high") or []
+        lows = quote_rows.get("low") or []
+        volumes = quote_rows.get("volume") or []
+
+        open_price = safe_float(opens[idx] if idx < len(opens) else None, close)
+        high = safe_float(highs[idx] if idx < len(highs) else None, max(open_price, close))
+        low = safe_float(lows[idx] if idx < len(lows) else None, min(open_price, close))
+        volume = int(safe_float(volumes[idx] if idx < len(volumes) else None, 0.0))
+        point_date = datetime.utcfromtimestamp(int(timestamp)).date().isoformat()
+
+        rows.append(
+            {
+                "date": point_date,
+                "open": round(open_price, 4),
+                "high": round(high, 4),
+                "low": round(low, 4),
+                "close": round(close, 4),
+                "volume": volume,
+            }
+        )
+
+    if len(rows) < 2:
+        raise ValueError(f"Yahoo chart returned insufficient rows for {ticker}")
+
+    rows.sort(key=lambda point: point["date"])
+    return rows
 
 
 def fetch_stooq_history(ticker):
@@ -1074,14 +747,20 @@ def fallback_history(ticker, points=MAX_CHART_HISTORY_DAYS + 40):
 
 def get_history(ticker, points=180):
     ticker = sanitize_ticker(ticker)
+    requested_points = MAX_CHART_HISTORY_DAYS if points <= 0 else points
+    range_value = yahoo_chart_range(requested_points)
 
     def load_history():
+        try:
+            return fetch_yahoo_history(ticker, range_value=range_value)
+        except Exception:
+            pass
         try:
             return fetch_stooq_history(ticker)
         except Exception:
             return fallback_history(ticker, MAX_CHART_HISTORY_DAYS + 40)
 
-    full_history = cached(f"history:{ticker}", 15 * 60, load_history)
+    full_history = cached(f"history:{ticker}:{range_value}", 60, load_history)
     if points <= 0:
         return full_history
     return full_history[-points:]
@@ -2886,16 +2565,6 @@ def build_stock_payload(ticker, days=120):
 
 
 def build_market_overview():
-    if POSTGRES_ENABLED:
-        try:
-            cached_payload = load_cached_market_overview_from_postgres(
-                max_age_seconds=MARKET_OVERVIEW_CACHE_TTL_SECONDS
-            )
-            if cached_payload:
-                return cached_payload
-        except Exception:
-            pass
-
     indices = []
     latest_date = ""
 
@@ -2917,21 +2586,13 @@ def build_market_overview():
             }
         )
 
-    payload = {"asOf": latest_date, "indices": indices}
-
-    if POSTGRES_ENABLED:
-        try:
-            store_market_overview_in_postgres(payload)
-        except Exception:
-            pass
-
-    return payload
+    return {"asOf": latest_date, "indices": indices}
 
 
 def build_assistant_query_response(prompt_text, selected_model):
     assistant_model = normalize_assistant_model(selected_model)
     ticker = infer_ticker_from_prompt(prompt_text)
-    prediction = get_prediction_response(ticker)
+    prediction = build_prediction(ticker)
     news_items = get_news(ticker, limit=8)
     provider_result = get_assistant_provider_analysis(assistant_model, prompt_text, ticker, prediction, news_items)
     prediction = apply_provider_analysis_to_prediction(prediction, assistant_model, provider_result)
@@ -2951,7 +2612,7 @@ def build_assistant_query_response(prompt_text, selected_model):
             f"Trading Pro used its local forecast engine for {ticker}."
         )
 
-    response_payload = {
+    return {
         "prompt": (prompt_text or "").strip(),
         "ticker": ticker,
         "assistantModel": assistant_model,
@@ -2960,20 +2621,6 @@ def build_assistant_query_response(prompt_text, selected_model):
         "prediction": prediction,
         "news": {"ticker": ticker, "items": news_items},
     }
-
-    if POSTGRES_ENABLED:
-        try:
-            log_assistant_query_in_postgres(
-                prompt_text,
-                ticker,
-                assistant_model.get("id", selected_model),
-                prediction,
-                provider_used=bool((prediction.get("assistantProvider") or {}).get("used")),
-            )
-        except Exception:
-            pass
-
-    return response_payload
 
 
 class AppHandler(SimpleHTTPRequestHandler):
@@ -3011,32 +2658,7 @@ class AppHandler(SimpleHTTPRequestHandler):
 
         try:
             if parsed.path == "/api/health":
-                postgres_summary = {}
-                if POSTGRES_ENABLED and POSTGRES_READY:
-                    try:
-                        postgres_summary = fetch_postgres_usage_summary()
-                    except Exception:
-                        postgres_summary = {}
-                self.send_json(
-                    {
-                        "status": "ok",
-                        "timestamp": datetime.utcnow().isoformat() + "Z",
-                        "postgresCache": {
-                            "enabled": POSTGRES_STATUS["enabled"],
-                            "available": POSTGRES_STATUS["available"],
-                            "configured": POSTGRES_STATUS["configured"],
-                            "ready": POSTGRES_READY,
-                            "warmTickers": PREDICTION_WARM_TICKERS,
-                            "ttlSeconds": PREDICTION_CACHE_TTL_SECONDS,
-                            "refreshIntervalSeconds": PREDICTION_REFRESH_INTERVAL_SECONDS,
-                            "marketOverviewTtlSeconds": MARKET_OVERVIEW_CACHE_TTL_SECONDS,
-                            "lastInitError": POSTGRES_STATUS["lastInitError"],
-                            "lastRefreshAt": POSTGRES_STATUS["lastRefreshAt"],
-                            "lastRefreshError": POSTGRES_STATUS["lastRefreshError"],
-                            "usage": postgres_summary,
-                        },
-                    }
-                )
+                self.send_json({"status": "ok", "timestamp": datetime.utcnow().isoformat() + "Z"})
                 return
 
             if parsed.path == "/api/market/overview":
@@ -3068,7 +2690,7 @@ class AppHandler(SimpleHTTPRequestHandler):
 
             if parsed.path == "/api/predict":
                 ticker = sanitize_ticker((params.get("ticker") or ["TSLA"])[0])
-                self.send_json(get_prediction_response(ticker))
+                self.send_json(build_prediction(ticker))
                 return
 
             self.send_json({"error": "Route not found"}, status=404)
@@ -3085,16 +2707,10 @@ class AppHandler(SimpleHTTPRequestHandler):
 def main():
     port = int(os.environ.get("PORT", "8000"))
     host = os.environ.get("HOST", "0.0.0.0")
-    init_postgres()
-    start_prediction_refresh_worker()
 
     server = ThreadingHTTPServer((host, port), AppHandler)
     display_host = "127.0.0.1" if host == "0.0.0.0" else host
     print(f"TradePro AI running on http://{display_host}:{port}")
-    if POSTGRES_ENABLED:
-        print(
-            f"Postgres prediction cache enabled (ttl={PREDICTION_CACHE_TTL_SECONDS}s, refresh={PREDICTION_REFRESH_INTERVAL_SECONDS}s)."
-        )
     print("Press Ctrl+C to stop.")
 
     try:
@@ -3102,7 +2718,6 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        PREDICTION_REFRESH_STOP.set()
         server.server_close()
 
 
