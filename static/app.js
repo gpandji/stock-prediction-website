@@ -1833,17 +1833,25 @@ function renderHistoryRangeControls(prediction) {
     return;
   }
 
-  const ranges = prediction?.chart?.ranges?.length
-    ? prediction.chart.ranges
-    : [
-        { id: "1d", label: "24H" },
-        { id: "5d", label: "5D" },
-        { id: "1m", label: "1M" },
-        { id: "3m", label: "3M" },
-        { id: "6m", label: "6M" },
-        { id: "1y", label: "1Y" },
-        { id: "2y", label: "2Y" },
-      ];
+  const fallbackRanges = [
+    { id: "1d", label: "24H" },
+    { id: "5d", label: "5D" },
+    { id: "1m", label: "1M" },
+    { id: "3m", label: "3M" },
+    { id: "6m", label: "6M" },
+    { id: "1y", label: "1Y" },
+    { id: "2y", label: "2Y" },
+  ];
+  const rangeMap = new Map();
+  fallbackRanges.forEach((range) => rangeMap.set(range.id, range));
+  (prediction?.chart?.ranges || []).forEach((range) => {
+    if (range?.id) {
+      rangeMap.set(range.id, { ...rangeMap.get(range.id), ...range });
+    }
+  });
+  const ranges = fallbackRanges
+    .map((range) => rangeMap.get(range.id))
+    .filter(Boolean);
 
   elements.historyRangeToggle.innerHTML = "";
 
