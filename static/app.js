@@ -1471,9 +1471,16 @@ function buildCandlestickSeries(actualSeries) {
 
 function buildShortHorizonForecast(prediction) {
   const intradaySeries = prediction?.series?.intraday || [];
-  const lastPoint = intradaySeries[intradaySeries.length - 1] || null;
-  const baseTime = lastPoint?.date ? new Date(lastPoint.date) : (prediction.cache?.generatedAt ? new Date(prediction.cache.generatedAt) : new Date());
-  const resolvedBaseTime = Number.isNaN(baseTime.getTime()) ? new Date() : baseTime;
+  const predictionUpdatedAt = prediction?.predictionUpdatedAt || prediction?.cache?.generatedAt || null;
+  const updateTime = predictionUpdatedAt ? new Date(predictionUpdatedAt) : new Date();
+  const resolvedUpdateTime = Number.isNaN(updateTime.getTime()) ? new Date() : updateTime;
+  const actualSeries = intradaySeries.filter((point) => {
+    if (!predictionUpdatedAt) {
+      return true;
+    }
+    return String(point?.date || "") <= predictionUpdatedAt;
+  });
+  const lastPoint = actualSeries[actualSeries.length - 1] || intradaySeries[intradaySeries.length - 1] || null;
   const startPrice = Number((lastPoint?.close ?? prediction.currentPrice ?? 0));
   const expectedReturn7d = Number(prediction.expectedReturn7dPct || 0) / 100;
   const totalIntervals = 24;
@@ -1484,12 +1491,21 @@ function buildShortHorizonForecast(prediction) {
     const progress = index / totalIntervals;
     const projectedPrice = startPrice * (1 + (twoHourReturn * progress));
     points.push({
-      date: new Date(resolvedBaseTime.getTime() + (5 * 60 * 1000 * index)).toISOString(),
+      date: new Date(resolvedUpdateTime.getTime() + (5 * 60 * 1000 * index)).toISOString(),
       price: Number(projectedPrice.toFixed(4)),
     });
   }
 
   return points;
+}
+
+function filterIntradayToPredictionUpdate(prediction) {
+  const predictionUpdatedAt = prediction?.predictionUpdatedAt || prediction?.cache?.generatedAt || null;
+  const intradaySeries = prediction?.series?.intraday || [];
+  if (!predictionUpdatedAt) {
+    return intradaySeries;
+  }
+  return intradaySeries.filter((point) => String(point?.date || "") <= predictionUpdatedAt);
 }
 
 function chartBounds(actualSeries, forecastSeries, candleSeries = []) {
@@ -1852,7 +1868,7 @@ function renderHistoryRangeControls(prediction) {
 
 function renderChartFromPrediction(prediction) {
   const actualHistory = activeHistoryRange === "1d"
-    ? (prediction?.series?.intraday || [])
+    ? filterIntradayToPredictionUpdate(prediction)
     : (prediction?.series?.actualHistory || prediction?.series?.actual || []);
   const forecastSeries = activeHistoryRange === "1d"
     ? buildShortHorizonForecast(prediction)
