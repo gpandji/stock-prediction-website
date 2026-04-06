@@ -293,6 +293,53 @@ function inferSetup(prediction) {
   return "Balanced swing setup";
 }
 
+function volatilityState(volatilityPct) {
+  const volatility = Number(volatilityPct || 0);
+  if (volatility >= 3.8) {
+    return "High";
+  }
+  if (volatility >= 2.2) {
+    return "Elevated";
+  }
+  if (volatility >= 1.2) {
+    return "Normal";
+  }
+  return "Calm";
+}
+
+function buildAgentWorkspace(prediction) {
+  const reliability = buildReliability(prediction);
+  const expected7d = Number(prediction.expectedReturn7dPct || 0);
+  const expected30d = Number(prediction.expectedReturn30dPct || 0);
+  const confidence = Number(prediction.confidencePct || 0);
+  const volatility = Number(prediction.indicators?.volatilityPct || 0);
+  const sampleCount = Number(prediction.learning?.horizons?.["7d"]?.sampleCount || 0);
+  const consensusPct = Number(prediction.learning?.horizons?.["7d"]?.consensusPct || 0);
+  const modelMode = prediction.model?.fallbackReason ? "Fallback stack" : "Primary stack";
+  const bias = expected30d >= 0 ? "Long bias" : "Short bias";
+  const volState = volatilityState(volatility);
+  const score = Math.round(clampNumber((reliability.score * 0.55) + (confidence * 0.45), 12, 86));
+  const notes = [
+    `7D edge is ${formatPercent(expected7d)} with a 30D projection of ${formatPercent(expected30d)} toward ${formatCurrency(prediction.predictedPrice30d || prediction.predictedPrice7d || prediction.currentPrice)}.`,
+    prediction.model?.fallbackReason
+      ? "Primary notebook model is offline, so the agent is running on fallback signal blending."
+      : "Primary model stack is online, but the score stays conservative until follow-through confirms the call.",
+    sampleCount > 0
+      ? `Adaptive memory sees ${sampleCount} similar setups with ${Math.round(consensusPct)}% directional agreement.`
+      : "Adaptive memory does not have enough clean analog matches yet.",
+    `${volState} volatility at ${volatility.toFixed(2)}% with current ${bias.toLowerCase()}.`,
+  ];
+
+  return {
+    score,
+    bias,
+    modelMode,
+    memoryConsensus: sampleCount > 0 ? `${Math.round(consensusPct)}% agree` : "No analog read",
+    volatilityState: `${volState} · ${volatility.toFixed(2)}%`,
+    notes,
+  };
+}
+
 function buildReliability(prediction) {
   let score = Number(prediction.confidencePct || 55) - 24;
   if (prediction.learning?.enabled) {
@@ -1296,27 +1343,21 @@ function renderAnalysisSummary(prediction, assistantProvider) {
 }
 
 function renderWorkspace(prediction) {
-  const reliability = buildReliability(prediction);
-  const regime = inferRegime(prediction);
-  const setup = inferSetup(prediction);
-  const band = percentileBand(prediction);
+  const workspace = buildAgentWorkspace(prediction);
   const scenarios = buildScenarios(prediction);
   const tradePlan = buildTradePlan(prediction);
   const analogs = buildAnalogMatches(prediction);
 
-  setTextIfPresent(elements.workspaceTrustLabel, `${reliability.label} in ${regime.toLowerCase()}`);
-  setTextIfPresent(elements.workspaceTrustScore, `${reliability.score}`);
-  setTextIfPresent(elements.workspaceRegimeValue, regime);
-  setTextIfPresent(elements.workspaceSetupValue, setup);
-  setTextIfPresent(
-    elements.workspaceBandValue,
-    `${formatPercent(band.lowerPct)} to ${formatPercent(band.upperPct)}`,
-  );
-  setMeterFill(elements.workspaceTrustMeter, reliability.score, reliability.score >= 70 ? "up" : reliability.score >= 55 ? "neutral" : "down");
+  setTextIfPresent(elements.workspaceTrustLabel, `${workspace.bias} with ${Number(prediction.confidencePct || 0)}% model confidence`);
+  setTextIfPresent(elements.workspaceTrustScore, `${workspace.score}`);
+  setTextIfPresent(elements.workspaceRegimeValue, workspace.modelMode);
+  setTextIfPresent(elements.workspaceSetupValue, workspace.memoryConsensus);
+  setTextIfPresent(elements.workspaceBandValue, workspace.volatilityState);
+  setMeterFill(elements.workspaceTrustMeter, workspace.score, workspace.score >= 70 ? "up" : workspace.score >= 55 ? "neutral" : "down");
 
   if (elements.workspaceTrustNotes) {
     elements.workspaceTrustNotes.innerHTML = "";
-    reliability.notes.forEach((note) => {
+    workspace.notes.forEach((note) => {
       const item = document.createElement("li");
       item.textContent = note;
       elements.workspaceTrustNotes.appendChild(item);
