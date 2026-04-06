@@ -150,13 +150,6 @@ const elements = {
   driverList: document.getElementById("driverList"),
   newsList: document.getElementById("newsList"),
   newsToggleBtn: document.getElementById("newsToggleBtn"),
-  workspaceTrustLabel: document.getElementById("workspaceTrustLabel"),
-  workspaceTrustScore: document.getElementById("workspaceTrustScore"),
-  workspaceTrustMeter: document.getElementById("workspaceTrustMeter"),
-  workspaceRegimeValue: document.getElementById("workspaceRegimeValue"),
-  workspaceSetupValue: document.getElementById("workspaceSetupValue"),
-  workspaceBandValue: document.getElementById("workspaceBandValue"),
-  workspaceTrustNotes: document.getElementById("workspaceTrustNotes"),
   scenarioList: document.getElementById("scenarioList"),
   executionBiasValue: document.getElementById("executionBiasValue"),
   executionEntryValue: document.getElementById("executionEntryValue"),
@@ -291,53 +284,6 @@ function inferSetup(prediction) {
     return "Early reversal attempt";
   }
   return "Balanced swing setup";
-}
-
-function volatilityState(volatilityPct) {
-  const volatility = Number(volatilityPct || 0);
-  if (volatility >= 3.8) {
-    return "High";
-  }
-  if (volatility >= 2.2) {
-    return "Elevated";
-  }
-  if (volatility >= 1.2) {
-    return "Normal";
-  }
-  return "Calm";
-}
-
-function buildAgentWorkspace(prediction) {
-  const reliability = buildReliability(prediction);
-  const expected7d = Number(prediction.expectedReturn7dPct || 0);
-  const expected30d = Number(prediction.expectedReturn30dPct || 0);
-  const confidence = Number(prediction.confidencePct || 0);
-  const volatility = Number(prediction.indicators?.volatilityPct || 0);
-  const sampleCount = Number(prediction.learning?.horizons?.["7d"]?.sampleCount || 0);
-  const consensusPct = Number(prediction.learning?.horizons?.["7d"]?.consensusPct || 0);
-  const modelMode = prediction.model?.fallbackReason ? "Fallback stack" : "Primary stack";
-  const bias = expected30d >= 0 ? "Long bias" : "Short bias";
-  const volState = volatilityState(volatility);
-  const score = Math.round(clampNumber((reliability.score * 0.55) + (confidence * 0.45), 12, 86));
-  const notes = [
-    `7D edge is ${formatPercent(expected7d)} with a 30D projection of ${formatPercent(expected30d)} toward ${formatCurrency(prediction.predictedPrice30d || prediction.predictedPrice7d || prediction.currentPrice)}.`,
-    prediction.model?.fallbackReason
-      ? "Primary notebook model is offline, so the agent is running on fallback signal blending."
-      : "Primary model stack is online, but the score stays conservative until follow-through confirms the call.",
-    sampleCount > 0
-      ? `Adaptive memory sees ${sampleCount} similar setups with ${Math.round(consensusPct)}% directional agreement.`
-      : "Adaptive memory does not have enough clean analog matches yet.",
-    `${volState} volatility at ${volatility.toFixed(2)}% with current ${bias.toLowerCase()}.`,
-  ];
-
-  return {
-    score,
-    bias,
-    modelMode,
-    memoryConsensus: sampleCount > 0 ? `${Math.round(consensusPct)}% agree` : "No analog read",
-    volatilityState: `${volState} · ${volatility.toFixed(2)}%`,
-    notes,
-  };
 }
 
 function buildReliability(prediction) {
@@ -1343,26 +1289,9 @@ function renderAnalysisSummary(prediction, assistantProvider) {
 }
 
 function renderWorkspace(prediction) {
-  const workspace = buildAgentWorkspace(prediction);
   const scenarios = buildScenarios(prediction);
   const tradePlan = buildTradePlan(prediction);
   const analogs = buildAnalogMatches(prediction);
-
-  setTextIfPresent(elements.workspaceTrustLabel, `${workspace.bias} with ${Number(prediction.confidencePct || 0)}% model confidence`);
-  setTextIfPresent(elements.workspaceTrustScore, `${workspace.score}`);
-  setTextIfPresent(elements.workspaceRegimeValue, workspace.modelMode);
-  setTextIfPresent(elements.workspaceSetupValue, workspace.memoryConsensus);
-  setTextIfPresent(elements.workspaceBandValue, workspace.volatilityState);
-  setMeterFill(elements.workspaceTrustMeter, workspace.score, workspace.score >= 70 ? "up" : workspace.score >= 55 ? "neutral" : "down");
-
-  if (elements.workspaceTrustNotes) {
-    elements.workspaceTrustNotes.innerHTML = "";
-    workspace.notes.forEach((note) => {
-      const item = document.createElement("li");
-      item.textContent = note;
-      elements.workspaceTrustNotes.appendChild(item);
-    });
-  }
 
   if (elements.scenarioList) {
     elements.scenarioList.innerHTML = "";
@@ -1524,9 +1453,11 @@ function buildCandlestickSeries(actualSeries) {
     const prevClose = Number((actualSeries[index - 1]?.close ?? actualSeries[index - 1]?.price ?? point.price));
     const close = Number((point.close ?? point.price ?? 0));
     const open = Number(point.open ?? prevClose);
-    const spread = Math.max(Math.abs(close - open), close * 0.0035);
-    const high = Number(point.high ?? (Math.max(open, close) + spread * 0.95));
-    const low = Number(point.low ?? (Math.min(open, close) - spread * 0.95));
+    const spread = Math.max(Math.abs(close - open), close * 0.0018);
+    const rawHigh = Number(point.high ?? (Math.max(open, close) + spread));
+    const rawLow = Number(point.low ?? (Math.min(open, close) - spread));
+    const high = Math.max(rawHigh, open, close);
+    const low = Math.min(rawLow, open, close);
     return {
       date: point.date,
       open,
@@ -1728,27 +1659,18 @@ function renderLineChart(context, actualSeries, forecastSeries, ticker, historyL
 function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, historyLabel, theme) {
   const candles = buildCandlestickSeries(actualSeries);
   const labels = actualSeries.map((point) => formatDateLabel(point.date));
-  labels.push(...forecastSeries.map((point) => formatDateLabel(point.date)));
 
   const wickData = candles.map((candle) => [candle.low, candle.high]);
-  wickData.push(...Array(forecastSeries.length).fill(null));
 
   const bodyData = candles.map((candle) => [candle.open, candle.close]);
-  bodyData.push(...Array(forecastSeries.length).fill(null));
 
   const wickColors = candles.map((candle) => (candle.up ? "rgba(151, 255, 206, 0.96)" : "rgba(255, 170, 180, 0.96)"));
   const bodyColors = candles.map((candle) => (candle.up ? "rgba(134, 221, 54, 0.98)" : "rgba(255, 78, 98, 0.98)"));
-  bodyColors.push(...Array(forecastSeries.length).fill("rgba(0,0,0,0)"));
 
-  const forecastData = Array(Math.max(actualSeries.length - 1, 0)).fill(null);
-  forecastData.push(actualSeries[actualSeries.length - 1]?.price || null);
-  forecastData.push(...forecastSeries.map((point) => point.price));
-
-  const bounds = chartBounds(actualSeries, forecastSeries, candles);
-  const forecastLabel = activeHistoryRange === "1d" ? "2H Forecast" : "30D Forecast";
+  const bounds = chartBounds(actualSeries, [], candles);
   const titleLabel = activeHistoryRange === "1d"
-    ? `${ticker} 24H Candles + 2-Hour Forecast`
-    : `${ticker} ${historyLabel} Candles + 30-Day Forecast`;
+    ? `${ticker} 24H Candles`
+    : `${ticker} ${historyLabel} Candles`;
 
   return new Chart(context, {
     type: "bar",
@@ -1758,36 +1680,24 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
         {
           label: "Wick",
           data: wickData,
-          backgroundColor: wickColors.concat(Array(forecastSeries.length).fill("rgba(0,0,0,0)")),
-          borderColor: wickColors.concat(Array(forecastSeries.length).fill("rgba(0,0,0,0)")),
+          backgroundColor: wickColors,
+          borderColor: wickColors,
           borderWidth: 1.6,
           borderSkipped: false,
-          borderRadius: 3,
-          barPercentage: activeHistoryRange === "1d" ? 0.14 : 0.12,
+          borderRadius: 0,
+          barPercentage: activeHistoryRange === "1d" ? 0.11 : 0.08,
           categoryPercentage: 0.9,
         },
         {
           label: "Candle",
           data: bodyData,
           backgroundColor: bodyColors,
-          borderColor: candles.map((candle) => (candle.up ? "rgba(197, 255, 140, 1)" : "rgba(255, 132, 144, 1)")).concat(Array(forecastSeries.length).fill("rgba(0,0,0,0)")),
+          borderColor: candles.map((candle) => (candle.up ? "rgba(197, 255, 140, 1)" : "rgba(255, 132, 144, 1)")),
           borderWidth: 1.8,
           borderSkipped: false,
-          borderRadius: 2,
-          barPercentage: activeHistoryRange === "1d" ? 0.74 : 0.68,
+          borderRadius: 0,
+          barPercentage: activeHistoryRange === "1d" ? 0.58 : 0.46,
           categoryPercentage: 0.9,
-        },
-        {
-          type: "line",
-          label: forecastLabel,
-          data: forecastData,
-          borderColor: "rgba(255, 191, 105, 1)",
-          backgroundColor: "rgba(255, 191, 105, 0.12)",
-          borderWidth: 2,
-          borderDash: [7, 4],
-          pointRadius: activeHistoryRange === "1d" ? 3 : 0,
-          pointHoverRadius: 5,
-          tension: 0.25,
         },
       ],
     },
@@ -1802,7 +1712,7 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
             usePointStyle: true,
           },
           filter(item) {
-            return item.text !== "Wick";
+            return item.text === "Candle";
           },
         },
         title: {
@@ -1819,7 +1729,7 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
             color: theme.tickColor,
             maxRotation: 0,
             autoSkip: true,
-            maxTicksLimit: activeHistoryRange === "1d" ? 16 : 12,
+            maxTicksLimit: activeHistoryRange === "1d" ? 20 : 12,
           },
           grid: { color: theme.gridColor },
         },
@@ -1853,7 +1763,8 @@ function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
   }
 
   const context = canvas.getContext("2d");
-  configureChartViewport(actualSeries.length, forecastSeries.length);
+  const viewportForecastCount = activeChartMode === "candles" ? 0 : forecastSeries.length;
+  configureChartViewport(actualSeries.length, viewportForecastCount);
   if (priceChart) {
     priceChart.destroy();
   }
