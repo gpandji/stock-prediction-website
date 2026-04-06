@@ -1672,93 +1672,146 @@ function renderLineChart(context, actualSeries, forecastSeries, ticker, historyL
   });
 }
 
-function renderCandlestickChart(context, actualSeries) {
-  const canvas = context.canvas;
+function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, historyLabel, theme) {
   const candles = buildCandlestickSeries(actualSeries);
-  const deviceScale = window.devicePixelRatio || 1;
-  const cssWidth = Math.max(Math.floor(canvas.clientWidth || canvas.width || 900), 320);
-  const cssHeight = Math.max(Math.floor(canvas.clientHeight || 460), 260);
+  const labels = actualSeries.map((point) => formatDateLabel(point.date));
+  labels.push(...forecastSeries.map((point) => formatDateLabel(point.date)));
 
-  canvas.width = Math.floor(cssWidth * deviceScale);
-  canvas.height = Math.floor(cssHeight * deviceScale);
-  canvas.style.width = `${cssWidth}px`;
-  canvas.style.height = `${cssHeight}px`;
+  const actualData = actualSeries.map((point) => point.price);
+  actualData.push(...Array(forecastSeries.length).fill(null));
 
-  context.setTransform(1, 0, 0, 1, 0, 0);
-  context.scale(deviceScale, deviceScale);
-  context.clearRect(0, 0, cssWidth, cssHeight);
+  const forecastData = Array(Math.max(actualSeries.length - 1, 0)).fill(null);
+  forecastData.push(actualSeries[actualSeries.length - 1]?.price || null);
+  forecastData.push(...forecastSeries.map((point) => point.price));
 
-  context.fillStyle = "#ffffff";
-  context.fillRect(0, 0, cssWidth, cssHeight);
+  const bounds = chartBounds(actualSeries, forecastSeries, candles);
+  const forecastLabel = activeHistoryRange === "1d" ? "2H Forecast" : "30D Forecast";
+  const titleLabel = activeHistoryRange === "1d"
+    ? `${ticker} 24H Candles + 2-Hour Forecast`
+    : `${ticker} ${historyLabel} Candles + 30-Day Forecast`;
 
-  if (!candles.length) {
-    return {
-      destroy() {
-        context.clearRect(0, 0, cssWidth, cssHeight);
-      },
-      update() {},
-    };
-  }
+  const candlestickOverlay = {
+    id: "candlestickOverlay",
+    afterDatasetsDraw(chart) {
+      const { ctx, chartArea, scales } = chart;
+      const xScale = scales.x;
+      const yScale = scales.y;
+      if (!chartArea || !xScale || !yScale) {
+        return;
+      }
 
-  const padding = { top: 18, right: 10, bottom: 16, left: 10 };
-  const plotWidth = Math.max(cssWidth - padding.left - padding.right, 10);
-  const plotHeight = Math.max(cssHeight - padding.top - padding.bottom, 10);
-  const lows = candles.map((candle) => candle.low);
-  const highs = candles.map((candle) => candle.high);
-  const minPrice = Math.min(...lows);
-  const maxPrice = Math.max(...highs);
-  const span = Math.max(maxPrice - minPrice, maxPrice * 0.01);
-  const paddedMin = minPrice - span * 0.08;
-  const paddedMax = maxPrice + span * 0.08;
-  const priceToY = (price) => (
-    padding.top + ((paddedMax - price) / Math.max(paddedMax - paddedMin, 0.0001)) * plotHeight
-  );
+      const slotWidth = candles.length > 1
+        ? Math.abs(xScale.getPixelForValue(1) - xScale.getPixelForValue(0))
+        : Math.max(chartArea.width - 24, 10);
+      const bodyWidth = Math.max(Math.min(slotWidth * 0.55, 14), 4);
 
-  const verticalSteps = 4;
-  context.strokeStyle = "rgba(203, 213, 225, 0.45)";
-  context.lineWidth = 1;
-  context.setLineDash([4, 10]);
-  for (let step = 1; step < verticalSteps; step += 1) {
-    const x = padding.left + (plotWidth * step / verticalSteps);
-    context.beginPath();
-    context.moveTo(x, padding.top);
-    context.lineTo(x, padding.top + plotHeight);
-    context.stroke();
-  }
-  context.setLineDash([]);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(chartArea.left, chartArea.top, chartArea.right - chartArea.left, chartArea.bottom - chartArea.top);
+      ctx.clip();
 
-  const candleSlot = plotWidth / candles.length;
-  const bodyWidth = Math.max(Math.min(candleSlot * 0.72, 14), 4);
-  const wickWidth = 1.3;
+      candles.forEach((candle, index) => {
+        const centerX = xScale.getPixelForValue(index);
+        const openY = yScale.getPixelForValue(candle.open);
+        const closeY = yScale.getPixelForValue(candle.close);
+        const highY = yScale.getPixelForValue(candle.high);
+        const lowY = yScale.getPixelForValue(candle.low);
+        const top = Math.min(openY, closeY);
+        const height = Math.max(Math.abs(closeY - openY), 2);
+        const color = candle.up ? "#34d399" : "#ff6b7d";
+        const wickColor = candle.up ? "rgba(52, 211, 153, 0.55)" : "rgba(255, 107, 125, 0.55)";
 
-  candles.forEach((candle, index) => {
-    const centerX = padding.left + (index + 0.5) * candleSlot;
-    const openY = priceToY(candle.open);
-    const closeY = priceToY(candle.close);
-    const highY = priceToY(candle.high);
-    const lowY = priceToY(candle.low);
-    const top = Math.min(openY, closeY);
-    const height = Math.max(Math.abs(closeY - openY), 2);
-    const color = candle.up ? "#10b981" : "#ef4444";
-    const wickColor = candle.up ? "rgba(16, 185, 129, 0.42)" : "rgba(239, 68, 68, 0.42)";
+        ctx.strokeStyle = wickColor;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(centerX, highY);
+        ctx.lineTo(centerX, lowY);
+        ctx.stroke();
 
-    context.strokeStyle = wickColor;
-    context.lineWidth = wickWidth;
-    context.beginPath();
-    context.moveTo(centerX, highY);
-    context.lineTo(centerX, lowY);
-    context.stroke();
+        ctx.fillStyle = color;
+        ctx.fillRect(centerX - (bodyWidth / 2), top, bodyWidth, height);
+      });
 
-    context.fillStyle = color;
-    context.fillRect(centerX - (bodyWidth / 2), top, bodyWidth, height);
-  });
-
-  return {
-    destroy() {
-      context.clearRect(0, 0, cssWidth, cssHeight);
+      ctx.restore();
     },
-    update() {},
   };
+
+  return new Chart(context, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        {
+          label: "Candles",
+          data: actualData,
+          borderColor: "rgba(0,0,0,0)",
+          backgroundColor: "rgba(0,0,0,0)",
+          borderWidth: 0,
+          pointRadius: 0,
+          pointHoverRadius: 0,
+          fill: false,
+          tension: 0,
+        },
+        {
+          label: forecastLabel,
+          data: forecastData,
+          borderColor: "rgba(85, 227, 194, 1)",
+          backgroundColor: "rgba(85, 227, 194, 0.08)",
+          borderWidth: 2,
+          borderDash: [7, 4],
+          fill: false,
+          pointRadius: activeHistoryRange === "1d" ? 2.5 : 0,
+          pointHoverRadius: 5,
+          tension: 0.32,
+        },
+      ],
+    },
+    options: {
+      maintainAspectRatio: false,
+      animation: { duration: 450 },
+      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: {
+          labels: {
+            color: theme.legendColor,
+            boxWidth: 12,
+            usePointStyle: true,
+            pointStyle: "line",
+          },
+        },
+        title: {
+          display: true,
+          text: titleLabel,
+          color: theme.titleColor,
+          font: { family: "Sora", size: 13 },
+        },
+      },
+      scales: {
+        x: {
+          ticks: {
+            color: theme.tickColor,
+            maxRotation: 0,
+            autoSkip: true,
+            maxTicksLimit: activeHistoryRange === "1d" ? 22 : 12,
+          },
+          grid: { color: theme.gridColor },
+        },
+        y: {
+          beginAtZero: false,
+          min: bounds.min,
+          max: bounds.max,
+          ticks: {
+            color: theme.tickColor,
+            callback(value) {
+              return `$${Number(value).toFixed(0)}`;
+            },
+          },
+          grid: { color: theme.gridColor },
+        },
+      },
+    },
+    plugins: [candlestickOverlay],
+  });
 }
 
 function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
@@ -1774,13 +1827,10 @@ function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
   }
 
   const context = canvas.getContext("2d");
-  const viewportForecastCount = activeChartMode === "candles" ? 0 : forecastSeries.length;
+  const viewportForecastCount = forecastSeries.length;
   configureChartViewport(actualSeries.length, viewportForecastCount);
   if (priceChart) {
     priceChart.destroy();
-  }
-  if (elements.chartWrap) {
-    elements.chartWrap.classList.toggle("classic-candles", activeChartMode === "candles");
   }
 
   priceChart = activeChartMode === "candles"
