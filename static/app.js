@@ -1656,97 +1656,93 @@ function renderLineChart(context, actualSeries, forecastSeries, ticker, historyL
   });
 }
 
-function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, historyLabel, theme) {
+function renderCandlestickChart(context, actualSeries) {
+  const canvas = context.canvas;
   const candles = buildCandlestickSeries(actualSeries);
-  const labels = actualSeries.map((point) => formatDateLabel(point.date));
+  const deviceScale = window.devicePixelRatio || 1;
+  const cssWidth = Math.max(Math.floor(canvas.clientWidth || canvas.width || 900), 320);
+  const cssHeight = Math.max(Math.floor(canvas.clientHeight || 460), 260);
 
-  const wickData = candles.map((candle) => [candle.low, candle.high]);
+  canvas.width = Math.floor(cssWidth * deviceScale);
+  canvas.height = Math.floor(cssHeight * deviceScale);
+  canvas.style.width = `${cssWidth}px`;
+  canvas.style.height = `${cssHeight}px`;
 
-  const bodyData = candles.map((candle) => [candle.open, candle.close]);
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.scale(deviceScale, deviceScale);
+  context.clearRect(0, 0, cssWidth, cssHeight);
 
-  const wickColors = candles.map((candle) => (candle.up ? "rgba(52, 211, 153, 0.45)" : "rgba(248, 113, 113, 0.45)"));
-  const bodyColors = candles.map((candle) => (candle.up ? "#10b981" : "#ef4444"));
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, cssWidth, cssHeight);
 
-  const bounds = chartBounds(actualSeries, [], candles);
-
-  return new Chart(context, {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [
-        {
-          label: "Wick",
-          data: wickData,
-          backgroundColor: wickColors,
-          borderColor: wickColors,
-          borderWidth: 1,
-          borderSkipped: false,
-          borderRadius: 0,
-          grouped: false,
-          barPercentage: activeHistoryRange === "1d" ? 0.12 : 0.08,
-          categoryPercentage: 0.82,
-        },
-        {
-          label: "Candle",
-          data: bodyData,
-          backgroundColor: bodyColors,
-          borderColor: bodyColors,
-          borderWidth: 0.5,
-          borderSkipped: false,
-          borderRadius: 0,
-          grouped: false,
-          barPercentage: activeHistoryRange === "1d" ? 0.66 : 0.54,
-          categoryPercentage: 0.82,
-        },
-      ],
-    },
-    options: {
-      maintainAspectRatio: false,
-      animation: { duration: 450 },
-      interaction: { mode: "index", intersect: false },
-      plugins: {
-        legend: {
-          display: false,
-        },
-        title: {
-          display: false,
-        },
+  if (!candles.length) {
+    return {
+      destroy() {
+        context.clearRect(0, 0, cssWidth, cssHeight);
       },
-      scales: {
-        x: {
-          stacked: false,
-          ticks: {
-            display: false,
-            maxRotation: 0,
-            autoSkip: true,
-            maxTicksLimit: activeHistoryRange === "1d" ? 20 : 12,
-          },
-          grid: {
-            color: "rgba(148, 163, 184, 0.24)",
-            borderDash: [4, 8],
-            drawTicks: false,
-          },
-          border: {
-            display: false,
-          },
-        },
-        y: {
-          beginAtZero: false,
-          min: bounds.min,
-          max: bounds.max,
-          ticks: {
-            display: false,
-          },
-          grid: {
-            display: false,
-          },
-          border: {
-            display: false,
-          },
-        },
-      },
-    },
+      update() {},
+    };
+  }
+
+  const padding = { top: 18, right: 10, bottom: 16, left: 10 };
+  const plotWidth = Math.max(cssWidth - padding.left - padding.right, 10);
+  const plotHeight = Math.max(cssHeight - padding.top - padding.bottom, 10);
+  const lows = candles.map((candle) => candle.low);
+  const highs = candles.map((candle) => candle.high);
+  const minPrice = Math.min(...lows);
+  const maxPrice = Math.max(...highs);
+  const span = Math.max(maxPrice - minPrice, maxPrice * 0.01);
+  const paddedMin = minPrice - span * 0.08;
+  const paddedMax = maxPrice + span * 0.08;
+  const priceToY = (price) => (
+    padding.top + ((paddedMax - price) / Math.max(paddedMax - paddedMin, 0.0001)) * plotHeight
+  );
+
+  const verticalSteps = 4;
+  context.strokeStyle = "rgba(203, 213, 225, 0.45)";
+  context.lineWidth = 1;
+  context.setLineDash([4, 10]);
+  for (let step = 1; step < verticalSteps; step += 1) {
+    const x = padding.left + (plotWidth * step / verticalSteps);
+    context.beginPath();
+    context.moveTo(x, padding.top);
+    context.lineTo(x, padding.top + plotHeight);
+    context.stroke();
+  }
+  context.setLineDash([]);
+
+  const candleSlot = plotWidth / candles.length;
+  const bodyWidth = Math.max(Math.min(candleSlot * 0.72, 14), 4);
+  const wickWidth = 1.3;
+
+  candles.forEach((candle, index) => {
+    const centerX = padding.left + (index + 0.5) * candleSlot;
+    const openY = priceToY(candle.open);
+    const closeY = priceToY(candle.close);
+    const highY = priceToY(candle.high);
+    const lowY = priceToY(candle.low);
+    const top = Math.min(openY, closeY);
+    const height = Math.max(Math.abs(closeY - openY), 2);
+    const color = candle.up ? "#10b981" : "#ef4444";
+    const wickColor = candle.up ? "rgba(16, 185, 129, 0.42)" : "rgba(239, 68, 68, 0.42)";
+
+    context.strokeStyle = wickColor;
+    context.lineWidth = wickWidth;
+    context.beginPath();
+    context.moveTo(centerX, highY);
+    context.lineTo(centerX, lowY);
+    context.stroke();
+
+    context.fillStyle = color;
+    context.fillRect(centerX - (bodyWidth / 2), top, bodyWidth, height);
   });
+
+  return {
+    destroy() {
+      context.clearRect(0, 0, cssWidth, cssHeight);
+    },
+    update() {},
+  };
 }
 
 function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
