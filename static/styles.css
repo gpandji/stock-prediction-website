@@ -1394,6 +1394,24 @@ body[data-theme="light"] .icon-btn {
   padding-bottom: 8px;
 }
 
+.chart-wrap.classic-candles {
+  background: #ffffff;
+  border-color: rgba(226, 232, 240, 0.9);
+  box-shadow: inset 0 0 0 1px rgba(241, 245, 249, 0.9);
+}
+
+.chart-wrap.classic-candles .chart-scroll-viewport {
+  scrollbar-color: rgba(203, 213, 225, 0.95) rgba(248, 250, 252, 1);
+}
+
+.chart-wrap.classic-candles .chart-scroll-viewport::-webkit-scrollbar-track {
+  background: rgba(248, 250, 252, 1);
+}
+
+.chart-wrap.classic-candles .chart-scroll-viewport::-webkit-scrollbar-thumb {
+  background: rgba(203, 213, 225, 0.95);
+}
+
 .metric-row {
   padding: 18px 22px 0;
   grid-template-columns: repeat(4, minmax(0, 1fr));

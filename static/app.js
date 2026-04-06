@@ -1664,13 +1664,10 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
 
   const bodyData = candles.map((candle) => [candle.open, candle.close]);
 
-  const wickColors = candles.map((candle) => (candle.up ? "rgba(151, 255, 206, 0.96)" : "rgba(255, 170, 180, 0.96)"));
-  const bodyColors = candles.map((candle) => (candle.up ? "rgba(134, 221, 54, 0.98)" : "rgba(255, 78, 98, 0.98)"));
+  const wickColors = candles.map((candle) => (candle.up ? "rgba(52, 211, 153, 0.45)" : "rgba(248, 113, 113, 0.45)"));
+  const bodyColors = candles.map((candle) => (candle.up ? "#10b981" : "#ef4444"));
 
   const bounds = chartBounds(actualSeries, [], candles);
-  const titleLabel = activeHistoryRange === "1d"
-    ? `${ticker} 24H Candles`
-    : `${ticker} ${historyLabel} Candles`;
 
   return new Chart(context, {
     type: "bar",
@@ -1682,22 +1679,24 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
           data: wickData,
           backgroundColor: wickColors,
           borderColor: wickColors,
-          borderWidth: 1.6,
+          borderWidth: 1,
           borderSkipped: false,
           borderRadius: 0,
-          barPercentage: activeHistoryRange === "1d" ? 0.11 : 0.08,
-          categoryPercentage: 0.9,
+          grouped: false,
+          barPercentage: activeHistoryRange === "1d" ? 0.12 : 0.08,
+          categoryPercentage: 0.82,
         },
         {
           label: "Candle",
           data: bodyData,
           backgroundColor: bodyColors,
-          borderColor: candles.map((candle) => (candle.up ? "rgba(197, 255, 140, 1)" : "rgba(255, 132, 144, 1)")),
-          borderWidth: 1.8,
+          borderColor: bodyColors,
+          borderWidth: 0.5,
           borderSkipped: false,
           borderRadius: 0,
-          barPercentage: activeHistoryRange === "1d" ? 0.58 : 0.46,
-          categoryPercentage: 0.9,
+          grouped: false,
+          barPercentage: activeHistoryRange === "1d" ? 0.66 : 0.54,
+          categoryPercentage: 0.82,
         },
       ],
     },
@@ -1707,43 +1706,43 @@ function renderCandlestickChart(context, actualSeries, forecastSeries, ticker, h
       interaction: { mode: "index", intersect: false },
       plugins: {
         legend: {
-          labels: {
-            color: theme.legendColor,
-            usePointStyle: true,
-          },
-          filter(item) {
-            return item.text === "Candle";
-          },
+          display: false,
         },
         title: {
-          display: true,
-          text: titleLabel,
-          color: theme.titleColor,
-          font: { family: "Sora", size: 13 },
+          display: false,
         },
       },
       scales: {
         x: {
           stacked: false,
           ticks: {
-            color: theme.tickColor,
+            display: false,
             maxRotation: 0,
             autoSkip: true,
             maxTicksLimit: activeHistoryRange === "1d" ? 20 : 12,
           },
-          grid: { color: theme.gridColor },
+          grid: {
+            color: "rgba(148, 163, 184, 0.24)",
+            borderDash: [4, 8],
+            drawTicks: false,
+          },
+          border: {
+            display: false,
+          },
         },
         y: {
           beginAtZero: false,
           min: bounds.min,
           max: bounds.max,
           ticks: {
-            color: theme.tickColor,
-            callback(value) {
-              return `$${Number(value).toFixed(0)}`;
-            },
+            display: false,
           },
-          grid: { color: theme.gridColor },
+          grid: {
+            display: false,
+          },
+          border: {
+            display: false,
+          },
         },
       },
     },
@@ -1767,6 +1766,9 @@ function renderChart(actualSeries, forecastSeries, ticker, historyLabel) {
   configureChartViewport(actualSeries.length, viewportForecastCount);
   if (priceChart) {
     priceChart.destroy();
+  }
+  if (elements.chartWrap) {
+    elements.chartWrap.classList.toggle("classic-candles", activeChartMode === "candles");
   }
 
   priceChart = activeChartMode === "candles"
